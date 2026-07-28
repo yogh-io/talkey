@@ -308,15 +308,22 @@ meaning - so long-form dictation is left raw.
 ## Privacy: what is stored, and where
 
 Nothing leaves your machine. The only network calls are to `127.0.0.1` - the
-whisper server, and Ollama if you turn on titling. There is no telemetry and no
-account.
+whisper server, and Ollama. There is no telemetry and no account.
+
+Ollama is worth spelling out, because it is **on by default**: to name a
+recording after what you said, talkey sends that recording's full transcript to
+`http://localhost:11434/api/generate` and uses the two or three words it gets
+back as the filename. If nothing is listening on that port, or `jq` is missing,
+the recording just keeps its timestamp name and nothing is sent. Turn it off
+with `TALKEY_ARCHIVE_TITLE=0`, point it elsewhere with `TALKEY_OLLAMA_URL`, or
+turn the archive off entirely with `TALKEY_ARCHIVE=0`.
 
 Local storage is a different question, and worth knowing about:
 
 | What | Where | Turn it off with |
 |---|---|---|
 | A `.wav` of every dictation and memo | `~/.local/share/talkey/recordings` | `TALKEY_ARCHIVE=0` |
-| Transcript keywords in those filenames | same, when titling is on | `TALKEY_ARCHIVE_TITLE=0` |
+| Transcript keywords in those filenames, via Ollama | same, on by default | `TALKEY_ARCHIVE_TITLE=0` |
 | Live transcripts, raw audio, the log | `$XDG_RUNTIME_DIR/talkey` | cleared when you log out |
 
 The archive is on by default and never pruned - it is what makes
