@@ -173,7 +173,15 @@ emit() {
        level:$l, zone:$z, meterpath:$mp}'
 }
 
+# While audio is being captured, the level meter samples it at a fixed rate -
+# that is what a meter is, and no event can stand in for it. While nothing is
+# being recorded there is nothing to sample and the HUD is not even open, so we
+# block on the state directory instead of waking up twice a second forever.
 while :; do
   emit
-  [[ -s "$RAW" ]] && sleep 0.1 || sleep 0.4
+  if [[ -s "$RAW" ]]; then
+    sleep 0.1
+  else
+    inotifywait -qq -t 30 -e create -e modify -e delete -e moved_to "$STATE_DIR" 2>/dev/null || true
+  fi
 done

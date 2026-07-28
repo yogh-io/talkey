@@ -217,7 +217,10 @@ warm in memory. Each dictation is a fast POST rather than a cold model load.
 
 The **HUD is a separate program**. talkey only writes state files; the eww
 adapter watches the recorder's pidfile with inotify and opens or closes the
-window on its own. It is event-driven throughout - nothing polls. Writing a
+window on its own. State changes are event-driven - nothing sits in a loop
+asking whether anything happened. (The level meter does sample the audio at a
+fixed rate while you speak, because that is what a meter is; it blocks the rest
+of the time.) Writing a
 different renderer means reading those same files, and talkey needs no changes.
 
 X11 **auto-repeat** is switched off for the bound keycodes, so holding a key is
