@@ -46,11 +46,37 @@ done
 systemctl --user daemon-reload
 systemctl --user enable --now talkey-whisper.service
 
-sleep 1
-if curl -sS --max-time 5 -o /dev/null http://127.0.0.1:8910/ 2>/dev/null; then
-  echo ">> whisper server responding on :8910"
+# Loading a 1.6GB model off cold cache takes far longer than a second, so a
+# single immediate check would say "not up" almost every time and send people
+# looking for a fault that isn't there. Wait for it, and only complain if it
+# really never answers. Host and port come from your config, not from here.
+HOST="${TALKEY_WHISPER_HOST:-127.0.0.1}"
+PORT="${TALKEY_WHISPER_PORT:-8910}"
+CONF="${TALKEY_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/talkey/talkey.env}"
+if [[ -f "$CONF" ]]; then
+  while IFS='=' read -r k v; do
+    k="${k//[[:space:]]/}"; v="${v%%#*}"; v="${v//[[:space:]]/}"
+    case "$k" in
+      TALKEY_WHISPER_HOST) [[ -n "$v" ]] && HOST="$v" ;;
+      TALKEY_WHISPER_PORT) [[ -n "$v" ]] && PORT="$v" ;;
+    esac
+  done < "$CONF"
+fi
+
+echo -n ">> waiting for the whisper server on $HOST:$PORT "
+up=0
+for _ in $(seq 1 60); do
+  if curl -sS --max-time 2 -o /dev/null "http://$HOST:$PORT/" 2>/dev/null; then up=1; break; fi
+  echo -n .
+  sleep 1
+done
+echo
+if (( up )); then
+  echo ">> whisper server responding on $HOST:$PORT"
 else
-  echo ">> whisper server not up yet - check: systemctl --user status talkey-whisper"
+  echo ">> whisper server did not answer within 60s."
+  echo "   check: systemctl --user status talkey-whisper"
+  echo "          journalctl --user -u talkey-whisper -n 30"
 fi
 
 cat <<EOF

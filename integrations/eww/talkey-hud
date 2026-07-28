@@ -48,11 +48,35 @@ export TALKEY_EWW_DIR="$CFG"
 
 command -v "$EWW" >/dev/null 2>&1 || { echo "eww not installed (pacman -S eww, or AUR eww-git)"; exit 1; }
 
+HUD_LOG="$STATE_DIR/hud.log"
+
 # 9>&- matters: `eww daemon` forks and outlives this script, and without closing
 # the fd it would inherit our single-instance lock and hold it forever. Kill this
 # watcher and every later one then reports "already running" and exits - the HUD
 # never comes back until you kill eww by hand.
-ew()   { "$EWW" -c "$CFG" "$@" >/dev/null 2>&1 9>&- || true; }
+#
+# Failures are recorded, not swallowed. A HUD that never appears used to leave
+# nothing behind to explain why: the window is not focusable and nobody is
+# watching this process's output.
+# Output goes to a FILE, never a pipe: `eww daemon` forks and keeps its stdout
+# open, so capturing it in a command substitution would wait for an EOF that
+# never comes and hang this watcher before it ever starts watching.
+#
+# Only failures reach the log. eww narrates every window it opens at INFO level,
+# and a log that records success too is one nobody reads when something breaks.
+ew() {
+  local status=0 tmp
+  tmp="$(mktemp "$STATE_DIR/eww-out.XXXXXX")" || tmp=/dev/null
+  { "$EWW" -c "$CFG" "$@" 9>&-; } >"$tmp" 2>&1 || status=$?
+  if (( status )); then
+    { printf '%s eww %s -> exit %d\n' "$(date +%H:%M:%S)" "$*" "$status"
+      [[ "$tmp" != /dev/null ]] && cat "$tmp"; } >> "$HUD_LOG"
+  fi
+  [[ "$tmp" != /dev/null ]] && rm -f "$tmp"
+  return "$status"
+}
+# `eww kill` with no daemon running is a normal outcome, not a fault.
+ew_optional() { "$EWW" -c "$CFG" "$@" >/dev/null 2>&1 9>&- || true; }
 open_hud()  { ew open talkeyhud ${open_args[@]+"${open_args[@]}"}; }
 close_hud() { ew close talkeyhud; }
 
@@ -83,7 +107,7 @@ help_json() {
 open_help()  { ew update "help=$(help_json)"; ew open talkeyhelp ${open_args[@]+"${open_args[@]}"}; }
 close_help() { ew close talkeyhelp; }
 
-if [[ "${1:-}" == stop ]]; then close_hud; close_help; ew kill; exit 0; fi
+if [[ "${1:-}" == stop ]]; then close_hud; close_help; ew_optional kill; exit 0; fi
 
 command -v inotifywait >/dev/null 2>&1 || { echo "need inotify-tools"; exit 1; }
 mkdir -p "$STATE_DIR"
@@ -98,7 +122,8 @@ fi
 
 # Restart the daemon so it picks up TALKEY_EWW_DIR (a stale daemon started without
 # it can't resolve eww-feed). Kill is a no-op if none is running.
-ew kill; sleep 0.3; ew daemon; sleep 0.4
+ew_optional kill; sleep 0.3; ew daemon || echo "talkey-hud: eww daemon failed to start - see $HUD_LOG" >&2
+sleep 0.4
 [[ -f "$PIDFILE" ]] && open_hud
 [[ -f "$HELP_ON" ]] && open_help
 
@@ -108,8 +133,8 @@ ew kill; sleep 0.3; ew daemon; sleep 0.4
 # Same two guards as ew(): 9>&- so this long-lived child never inherits the
 # single-instance lock, and a trap so it dies with us instead of being reparented
 # to init and watching the state dir forever.
-exec 8< <(inotifywait -m -e create -e delete -e moved_to -e moved_from \
-           --format '%e %f' "$STATE_DIR" 2>/dev/null 9>&-)
+exec 8< <(inotifywait -q -m -e create -e delete -e moved_to -e moved_from \
+           --format '%e %f' "$STATE_DIR" 2>>"$HUD_LOG" 9>&-)
 WATCH_PID=$!
 trap 'kill "$WATCH_PID" 2>/dev/null' EXIT INT TERM
 
@@ -125,3 +150,9 @@ while read -r _ev fname <&8; do
       if [[ -f "$HELP_ON" ]]; then open_help; else close_help; fi ;;
   esac
 done
+
+# Falling out of that loop means the watch died. Say so and exit non-zero, so a
+# service restarts us instead of leaving a dictation with no HUD and no reason.
+echo "talkey-hud: the state watch ended unexpectedly - see $HUD_LOG" >&2
+printf '%s watch ended unexpectedly\n' "$(date +%H:%M:%S)" >> "$HUD_LOG"
+exit 1

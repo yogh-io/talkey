@@ -530,13 +530,26 @@ begin_dictation() {
   record_start
 }
 
+# Take the finished audio out of the shared path before anything reads it.
+# Press the dictate key again while this one is still transcribing and
+# record_start truncates $STATE_DIR/dictate.raw - which is the buffer we are
+# still reading, and the one archive_audio is about to store. Renaming is
+# atomic: the new recording gets a fresh file, this one keeps what it captured.
+claim_take() {
+  local take="$STATE_DIR/$MODE.take-$$"
+  mv -f "$RAW" "$take.raw" 2>/dev/null || return 1
+  RAW="$take.raw"; WAV="$take.wav"
+  return 0
+}
+
 finish_dictation() {
-  : > "$PENDING"; trap 'rm -f "$PENDING"' EXIT
+  : > "$PENDING"; trap 'rm -f "$PENDING" "$RAW" "$WAV"' EXIT
   # If this dictation is ending on a cancel, stop the recorder WITHOUT the stop
   # tone so the cancel tone plays alone (matches the old immediate-cancel sound).
   local q=""; [[ -f "$CANCEL_REQ" ]] && q=quiet
   record_stop "$q" || { rm -f "$PRESSTIME"; return 0; }
   stop_pump
+  claim_take || { log "no audio to finish"; rm -f "$PRESSTIME"; return 0; }
   diag "live transcript at stop: '$(cat "$TRANSCRIPT" 2>/dev/null)'"
   if [[ -f "$CANCEL_REQ" ]]; then
     rm -f "$CANCEL_REQ" "$SUBMIT_REQ" "$RAW"
@@ -641,9 +654,13 @@ case "$MODE/$ACTION" in
     else
       record_start
     fi ;;
-  memo/release)  if record_stop; then archive_audio; playback; fi ;;
+  memo/release)  if record_stop && claim_take; then
+                   trap 'rm -f "$RAW" "$WAV"' EXIT; archive_audio; playback
+                 fi ;;
   memo/start)    record_start ;;
-  memo/stop)     if record_stop; then playback; fi ;;
+  memo/stop)     if record_stop && claim_take; then
+                   trap 'rm -f "$RAW" "$WAV"' EXIT; playback
+                 fi ;;
 
   # Submit button (Triangle key / mouse button 9). Idle: a plain Enter. During a
   # dictation: each press CYCLES the action that finish_dictation will take when
