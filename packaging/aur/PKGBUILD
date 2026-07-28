@@ -1,5 +1,11 @@
-# Maintainer: Yogh <yogh-io@users.noreply.github.com>
-pkgname=talkey
+# Maintainer: yogh-io <info@yogh.nl>
+pkgname=talkey-git
+# The scripts probe /usr/share/talkey for their data dir, so the share tree is
+# named after the project, not the package. Only pkgname carries the -git.
+_name=talkey
+# A placeholder. makepkg runs pkgver() against the clone and rewrites this line
+# in place, so whatever is committed here is only what the AUR page shows until
+# the next build.
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Push-to-talk voice input for X11/i3 - hold a key, speak, the text is typed. Offline, no API key."
@@ -28,12 +34,28 @@ optdepends=(
   'sxhkd: key bindings without i3'
   'xbindkeys: key bindings without i3'
 )
+makedepends=('git')
+provides=("$_name")
+conflicts=("$_name")
 install="$pkgname.install"
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+source=("$pkgname::git+$url.git")
 sha256sums=('SKIP')
 
+# Tagged: 0.1.0.r12.gabc1234. Untagged: the same shape from the commit count, so
+# an untagged repo still produces an increasing version. Testing the captured
+# string rather than the pipeline's exit status is deliberate - sed succeeds on
+# empty input, so `git describe || fallback` would leave pkgver empty until the
+# first tag exists.
+pkgver() {
+  cd "$pkgname"
+  local v
+  v="$(git describe --long --tags --abbrev=7 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g')"
+  [[ -n "$v" ]] || v="0.1.0.r$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
+  printf '%s' "$v"
+}
+
 package() {
-  cd "$srcdir/$pkgname-$pkgver"
+  cd "$pkgname"
 
   # Executables. Sibling scripts are found via $SCRIPT_DIR, so they must all
   # land in the same bindir.
@@ -49,16 +71,16 @@ package() {
 
   # Read-only data. The layout under this root matches a git checkout exactly,
   # so the scripts resolve it with one probe and behave identically either way.
-  install -Dm644 -t "$pkgdir/usr/share/$pkgname" vocabulary.txt
-  install -Dm644 -t "$pkgdir/usr/share/$pkgname/lib" lib/common.sh
-  install -Dm644 -t "$pkgdir/usr/share/$pkgname/sounds" sounds/*.wav
-  install -Dm644 -t "$pkgdir/usr/share/$pkgname/bindings" \
+  install -Dm644 -t "$pkgdir/usr/share/$_name" vocabulary.txt
+  install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/common.sh
+  install -Dm644 -t "$pkgdir/usr/share/$_name/sounds" sounds/*.wav
+  install -Dm644 -t "$pkgdir/usr/share/$_name/bindings" \
     bindings/i3.conf bindings/sxhkdrc bindings/xbindkeysrc bindings/README.md
-  install -Dm644 -t "$pkgdir/usr/share/$pkgname/config" config/talkey.env.example
-  install -Dm644 -t "$pkgdir/usr/share/$pkgname/integrations/eww" \
+  install -Dm644 -t "$pkgdir/usr/share/$_name/config" config/talkey.env.example
+  install -Dm644 -t "$pkgdir/usr/share/$_name/integrations/eww" \
     integrations/eww/eww.yuck integrations/eww/eww.scss integrations/eww/blank.svg \
     integrations/eww/README.md
-  install -Dm755 -t "$pkgdir/usr/share/$pkgname/integrations/eww" integrations/eww/eww-feed
+  install -Dm755 -t "$pkgdir/usr/share/$_name/integrations/eww" integrations/eww/eww-feed
 
   # User units, with the installed path baked in. talkey-hud and talkey-norepeat
   # are optional - a window manager can start them instead - but a service is the
