@@ -88,8 +88,10 @@ package manager is yours - so setup names the model, prints the AUR package, the
 official `download-ggml-model.sh` command and the direct URL, and leaves the
 choice of which to run to you.
 
-Add `eww` for the live HUD. It is optional, but it is most of what makes this
-pleasant to use.
+`eww` comes with it, and is a real dependency rather than a nice-to-have -
+without the HUD you dictate blind, with only tones and notifications. It is
+AUR-only, so `makepkg -si` on its own cannot resolve it; an AUR helper can, or
+install `eww` first.
 
 ### Already running whisper yourself?
 
@@ -160,10 +162,9 @@ not otherwise use, within reach of a resting hand.
 
 | | |
 |---|---|
-| Required | X11, `bash` 4+, `whisper-cpp`, `ffmpeg`, `xdotool`, `xset`, `curl` |
+| Required | X11, `bash` 4+, `whisper-cpp`, `ffmpeg`, `xdotool`, `xset`, `curl`, and for the HUD `eww` + `inotify-tools` + `jq` |
 | Sound | a PulseAudio-compatible server: PulseAudio itself, or PipeWire with `pipewire-pulse`. Recording is `ffmpeg -f pulse`, playback is `paplay`. |
 | A speech model | `whisper.cpp-model-large-v3-turbo` (default), or any ggml model |
-| Live HUD and cheat sheet | `eww`, `inotify-tools`, `jq` |
 | Live text in the HUD as you speak | `python` - without it the HUD still shows state and the meter |
 | Translate key | `whisper.cpp-model-small` - turbo dropped whisper's translate task |
 | Key bindings | your window manager, or `sxhkd` / `xbindkeys` |

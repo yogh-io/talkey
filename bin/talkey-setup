@@ -120,7 +120,9 @@ config_set() {
 step_deps() {
   step "checking what is installed"
   local missing=()
-  for c in ffmpeg paplay xdotool xset curl; do
+  # eww, inotifywait and jq are the HUD, and the HUD is not a bonus - without it
+  # you dictate blind. Same list as the package's depends.
+  for c in ffmpeg paplay xdotool xset curl eww inotifywait jq; do
     have "$c" || missing+=("$c")
   done
   if (( ${#missing[@]} )); then
@@ -130,11 +132,10 @@ step_deps() {
   ok "core tools present"
 
   local soft=()
-  have eww        || soft+=("eww (the HUD and cheat sheet)")
-  have inotifywait|| soft+=("inotify-tools (the HUD)")
-  have jq         || soft+=("jq (the HUD, confidence readout)")
   have python3    || soft+=("python (live text in the HUD as you speak)")
   have notify-send|| soft+=("libnotify (desktop notifications)")
+  have xev        || soft+=("xorg-xev (so talkey-setup can read your keycodes)")
+  have ollama     || soft+=("ollama (names recordings after what you said)")
   if (( ${#soft[@]} )); then
     info "optional, everything still dictates without them:"
     printf '     %s\n' "${soft[@]}"

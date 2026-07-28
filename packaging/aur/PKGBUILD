@@ -20,15 +20,20 @@ depends=(
   'xorg-xset'
   'libpulse'
   'curl'
+  # The HUD. Nominally talkey only writes state files and any renderer could
+  # read them, but eww is the only renderer there is - without it you dictate
+  # blind, with tones and notifications for feedback. That is not the program
+  # this is, so it is a dependency rather than a nice-to-have. eww is AUR-only,
+  # and it needs both of these to render a tick.
+  'eww'
+  'inotify-tools'
+  'jq'
 )
 optdepends=(
   'whisper.cpp-model-large-v3-turbo: the default speech model (AUR) - talkey needs some model'
   'whisper.cpp-model-small: translate-to-English support (AUR)'
-  'eww: the live dictation HUD and the key cheat sheet (AUR)'
-  'inotify-tools: the live dictation HUD'
   'python: live word-by-word text in the HUD as you speak - dictation itself does not need it'
-  'jq: the live dictation HUD, the confidence readout, and titles for archived recordings'
-  'libnotify: desktop notifications - the only feedback when the HUD is not installed'
+  'libnotify: desktop notifications alongside the HUD, and the only feedback if you disable it'
   'ollama: names archived recordings after what you said - needs a model pulled too (default qwen2.5:3b)'
   'xorg-xev: lets talkey-setup read your keycodes off the keyboard'
   'xclip: paste mode (TALKEY_PASTE=1) instead of typing'
