@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# talkey-setup - the interactive first run: pick a model, install it, start the
+# talkey-setup - the interactive first run: choose a speech model, start the
 # server, and turn the keys you actually press into a bindings file.
 #
 # The two things a README cannot do for you are choosing a model (the sizes and
 # tradeoffs are real, and the right answer depends on your GPU) and finding a
 # keycode (which needs the key in your hand). This does both, and nothing else
 # that documentation already covers.
+#
+# It installs nothing. Your package manager is yours, and a model is an install
+# whichever way it arrives - so this says which one and how, with the official
+# links, and leaves the running of it to you. What it does do is enable talkey's
+# own systemd unit, after asking, and write talkey's own config files.
 #
 #   talkey-setup            # everything, in order
 #   talkey-setup model      # just the model
@@ -64,6 +69,26 @@ choose() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# talkey runs on any X11 desktop with bash - the AUR package is one way in, not
+# the only one. Package names differ per distro and guessing them wrong sends
+# people looking for something that does not exist under that name, so name the
+# COMMANDS, and only spell out packages where we can actually tell.
+declare -A ARCH_PKG=(
+  [ffmpeg]=ffmpeg      [paplay]=libpulse       [xdotool]=xdotool
+  [xset]=xorg-xset     [curl]=curl             [xev]=xorg-xev
+  [jq]=jq              [python3]=python        [inotifywait]=inotify-tools
+  [notify-send]=libnotify
+)
+pkg_hint() {  # pkg_hint <command>...
+  local c pkgs=()
+  if have pacman; then
+    for c in "$@"; do pkgs+=("${ARCH_PKG[$c]:-$c}"); done
+    printf 'pacman -S %s' "${pkgs[*]}"
+  else
+    printf 'install whatever your distro calls the packages providing: %s' "$*"
+  fi
+}
+
 # --- config file -----------------------------------------------------------
 # Written one key at a time so re-running never clobbers settings from an
 # earlier run, or anything you added by hand.
@@ -100,12 +125,12 @@ step_deps() {
   done
   if (( ${#missing[@]} )); then
     warn "missing, and dictation will not work without them: ${missing[*]}"
-    die "install those first (pacman -S ffmpeg libpulse xdotool xorg-xset curl)"
+    die "$(pkg_hint "${missing[@]}")"
   fi
   ok "core tools present"
 
   local soft=()
-  have eww        || soft+=("eww (the HUD and cheat sheet - AUR)")
+  have eww        || soft+=("eww (the HUD and cheat sheet)")
   have inotifywait|| soft+=("inotify-tools (the HUD)")
   have jq         || soft+=("jq (the HUD, confidence readout)")
   have python3    || soft+=("python (live text in the HUD as you speak)")
@@ -138,34 +163,25 @@ installed_models() {
   done
 }
 
-model_download() {  # model_download <name>
-  local name="$1" url dest tmp
-  url="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${name}.bin"
-  dest="$MODEL_DIR/ggml-${name}.bin"
-  mkdir -p "$MODEL_DIR"
-  tmp="$dest.part"
-  info "downloading to $dest"
-  # --fail so an HTML error page never lands as a .bin, -C - so a re-run resumes
-  # instead of starting a 1.6GB download over.
-  if curl -fL --progress-bar -C - -o "$tmp" "$url"; then
-    mv -f "$tmp" "$dest"
-    ok "model ready: $dest"
-    return 0
+# whisper-server takes one model file, as a path, fixed when it starts - there is
+# no registry to pull from and no way to name a model per request. So the file
+# has to exist before talkey starts anything, and getting it is an install: your
+# package manager, or a download you chose to run. Not talkey's to do for you.
+# This prints the ways in and gets out of the way.
+model_howto() {  # model_howto <name>
+  local name="$1"
+  printf '\n   %sHow to get it - pick whichever suits you:%s\n\n' "$B" "$R"
+  if have pacman; then
+    printf '     from the AUR:\n'
+    printf '       whisper.cpp-model-%s\n\n' "$name"
   fi
-  rm -f "$tmp"
-  warn "download failed: $url"
-  return 1
-}
-
-model_via_helper() {  # model_via_helper <helper> <name>
-  local helper="$1" name="$2" pkg="whisper.cpp-model-${name}"
-  info "running: $helper -S $pkg"
-  if "$helper" -S --needed "$pkg"; then
-    ok "installed $pkg"
-    return 0
-  fi
-  warn "$helper could not install $pkg"
-  return 1
+  printf '     the official whisper.cpp downloader, from a whisper.cpp checkout:\n'
+  printf '       bash models/download-ggml-model.sh %s %s\n\n' "$name" "$MODEL_DIR"
+  printf '     or straight from the model repo:\n'
+  printf '       curl -fL --create-dirs -o %s/ggml-%s.bin \\\n' "$MODEL_DIR" "$name"
+  printf '         https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-%s.bin\n\n' "$name"
+  printf '     whisper.cpp: https://github.com/ggml-org/whisper.cpp\n'
+  printf '     models:      https://huggingface.co/ggerganov/whisper.cpp\n\n'
 }
 
 step_model() {
@@ -173,11 +189,11 @@ step_model() {
   local have_list
   have_list="$(installed_models)"
   if [[ -n "$have_list" ]]; then
-    ok "already installed:"
+    ok "already there:"
     while IFS= read -r f; do printf '     %s\n' "$f"; done <<<"$have_list"
-    ask_yn "add another model?" n || return 0
+    ask_yn "pick a different one?" n || return 0
   else
-    info "talkey needs one. Nothing works without it."
+    info "talkey needs one. Nothing transcribes without it."
   fi
 
   local labels=() m name size desc
@@ -185,31 +201,16 @@ step_model() {
     IFS='|' read -r name size desc <<<"$m"
     labels+=("$name  ($size) - $desc")
   done
-  labels+=("skip - I will install a model myself")
+  labels+=("decide later")
 
   local pick
-  pick="$(choose "which model?" "${labels[@]}")"
-  (( pick > ${#MODELS[@]} )) && { info "skipped - set TALKEY_MODEL_NAME once you have one"; return 0; }
+  pick="$(choose "which model do you want to use?" "${labels[@]}")"
+  (( pick > ${#MODELS[@]} )) && { info "nothing written - set TALKEY_MODEL_NAME when you have one"; return 0; }
   IFS='|' read -r name size desc <<<"${MODELS[$((pick-1))]}"
 
-  # Two ways in. The AUR package is pacman-managed and shared; the direct
-  # download needs no helper and lands where talkey-whisper-server also probes.
-  local helper=""
-  for h in yay paru; do have "$h" && { helper="$h"; break; }; done
-  local method=1
-  if [[ -n "$helper" ]]; then
-    method="$(choose "how should it be installed?" \
-      "download it to $MODEL_DIR ($size)" \
-      "install the AUR package whisper.cpp-model-$name with $helper")"
-  else
-    info "no AUR helper found, downloading directly"
-  fi
-
-  if (( method == 2 )); then
-    model_via_helper "$helper" "$name" || return 1
-  else
-    model_download "$name" || return 1
-  fi
+  model_howto "$name"
+  info "talkey looks in $MODEL_DIR and /usr/share/whisper.cpp-model-*"
+  info "somewhere else? set TALKEY_MODEL to the full path of the .bin"
 
   # Only write the setting when it is not what talkey already defaults to, so
   # the config stays a list of your choices rather than a copy of the defaults.
@@ -317,7 +318,7 @@ step_keys() {
   step "key bindings"
   if ! have xev; then
     warn "xev is not installed, so keys cannot be read from the keyboard"
-    info "install it (pacman -S xorg-xev) and re-run: talkey-setup keys"
+    info "$(pkg_hint xev), then re-run: talkey-setup keys"
     ask_yn "type the keycodes in by hand instead?" n || return 1
   fi
 

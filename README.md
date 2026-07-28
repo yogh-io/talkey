@@ -79,11 +79,31 @@ talkey-setup
 `talkey-setup` asks the two questions no documentation can answer for you: which
 speech model you want (they range from 142MB to 1.6GB, and the right one depends
 on whether you have a GPU), and which keys you want to talk on - you press them,
-it reads the keycodes. It also starts the speech service and writes the bindings
-file. Safe to re-run; `talkey-setup keys` rebinds later.
+it reads the keycodes. It then tells you how to get the model you picked, starts
+the speech service, and writes the bindings file. Safe to re-run;
+`talkey-setup keys` rebinds later.
+
+It installs nothing for you. A model is an install however it arrives, and your
+package manager is yours - so setup names the model, prints the AUR package, the
+official `download-ggml-model.sh` command and the direct URL, and leaves the
+choice of which to run to you.
 
 Add `eww` for the live HUD. It is optional, but it is most of what makes this
 pleasant to use.
+
+### Already running whisper yourself?
+
+Then skip all of it. talkey talks to a whisper.cpp server over HTTP, so point it
+at yours and it never touches a model, a path, or a systemd unit:
+
+```bash
+TALKEY_WHISPER_URL=http://your-host:8910/inference
+```
+
+Set that in `~/.config/talkey/talkey.env`. Otherwise talkey starts a server for
+you (`talkey-whisper.service` runs `talkey-whisper-server`, which resolves the
+binary and the model), and that is the only reason it needs to know about models
+at all.
 
 ### From a checkout
 

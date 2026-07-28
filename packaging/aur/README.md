@@ -27,6 +27,18 @@ git push origin master
 `.SRCINFO` is a dotfile, so `git add *` silently skips it and the AUR hook
 rejects the push. Add it by name.
 
+Building in the AUR clone leaves artifacts behind, so it wants a `.gitignore` of
+its own - same as diffstalker-git's:
+
+```
+*.pkg.tar.zst
+src/
+pkg/
+talkey-git/
+```
+
+`talkey-git/` is the clone makepkg makes of this repo, from `source=`.
+
 Being a VCS package, there is nothing to tag and no tarball to checksum -
 `sha256sums=('SKIP')` is correct for a git source, and users always build the
 current `main`.

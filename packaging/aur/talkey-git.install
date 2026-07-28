@@ -1,12 +1,14 @@
 post_install() {
   cat <<'EOF'
 
-One command finishes the setup - it picks a speech model, starts the server, and
-reads your keys off the keyboard so no keycode is ever typed by hand:
+One command finishes the setup - it helps you choose a speech model and tells you
+how to get it, starts the server, and reads your keys off the keyboard so no
+keycode is ever typed by hand:
 
   talkey-setup
 
-Safe to re-run, and `talkey-setup keys` rebinds whenever you like.
+It installs nothing on your behalf. Safe to re-run, and `talkey-setup keys`
+rebinds whenever you like.
 
 Rather do it by hand? Every step is in /usr/share/doc/talkey-git/README.md.
 EOF
