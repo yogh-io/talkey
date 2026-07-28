@@ -12,12 +12,14 @@ UNIT_DIR="$HOME/.config/systemd/user"
 MODEL_NAME="${TALKEY_MODEL_NAME:-large-v3-turbo}"
 
 echo ">> checking runtime deps"
-for c in ffmpeg paplay xdotool xset curl python3; do
+for c in ffmpeg paplay xdotool xset curl; do
   command -v "$c" >/dev/null 2>&1 || { echo "MISSING: $c"; exit 1; }
 done
 for c in eww inotifywait; do
   command -v "$c" >/dev/null 2>&1 || echo "note: '$c' missing - live HUD disabled (set TALKEY_STREAM=0, or install it)"
 done
+# Not required: talkey drops the live text and dictates as usual without it.
+command -v python3 >/dev/null 2>&1 || echo "note: 'python3' missing - the HUD will show state and meter, but no live text"
 
 # whisper: a distro package, or built into ~/.local by setup/build-whisper.sh.
 have_server=0

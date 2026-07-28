@@ -20,13 +20,13 @@ depends=(
   'xorg-xset'
   'libpulse'
   'curl'
-  'python'
 )
 optdepends=(
   'whisper.cpp-model-large-v3-turbo: the default speech model (AUR) - talkey needs some model'
   'whisper.cpp-model-small: translate-to-English support (AUR)'
   'eww: the live dictation HUD and the key cheat sheet (AUR)'
   'inotify-tools: the live dictation HUD'
+  'python: live word-by-word text in the HUD as you speak - dictation itself does not need it'
   'jq: the live dictation HUD, the confidence readout, and titles for archived recordings'
   'libnotify: desktop notifications - the only feedback when the HUD is not installed'
   'ollama: auto-titled recordings in the archive'
