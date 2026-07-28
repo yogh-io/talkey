@@ -29,14 +29,17 @@ from a package).
 
 ## Prerequisites
 
-- **eww**: `pacman -S eww`, or `yay -S eww-git`.
+- **eww**: from the AUR (`yay -S eww`). It is not in any official repo.
 - `jq`, `inotify-tools`.
 
 ## How it runs
 
-The i3 include (`i3/talkey.conf`) does two things for the HUD: floats it and
-never focuses it (`[class="(?i)eww"]`), and starts the adapter with
-`exec_always` (it is single-instance, so reloads never stack a second watcher).
+The i3 include (`bindings/i3.conf`, installed as
+`/usr/share/talkey/bindings/i3.conf`, which you copy to `~/.config/i3/talkey.conf`)
+does two things for the HUD: floats it and never focuses it
+(`[title="^Eww - talkey(hud|help)$"]` - matched by title, not class, because every
+eww window shares the class `Eww`), and starts the adapter with `exec_always`
+(it is single-instance, so reloads never stack a second watcher).
 
 So once eww is installed and i3 is reloaded, dictation just shows the HUD. No
 separate setup.

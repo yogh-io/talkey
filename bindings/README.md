@@ -50,6 +50,16 @@ under those, run them as user services:
 systemctl --user enable --now talkey-hud talkey-norepeat
 ```
 
+`--now` starts them straight away, but both units are wanted by
+`graphical-session.target`, and a plain X11 session does not reach that target on
+its own - so they would not come back at your next login. Start it yourself, from
+`~/.xinitrc` or your WM autostart, before the WM starts:
+
+```bash
+systemctl --user import-environment DISPLAY XAUTHORITY
+systemctl --user start graphical-session.target
+```
+
 `talkey-norepeat` needs to know which keys, and a service has no argument list,
 so put them in `~/.config/talkey/talkey.env`:
 

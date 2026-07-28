@@ -20,6 +20,9 @@ done
 # Without this the failure is an unbound-variable death inside the eww daemon,
 # where nobody ever sees it.
 [[ -n "${DATA_DIR:-}" ]] || { echo "eww-feed: cannot find lib/common.sh" >&2; exit 1; }
+# Same reasoning: without jq every tick would emit nothing and the HUD would sit
+# there blank, looking like talkey never heard you.
+command -v jq >/dev/null 2>&1 || { echo "eww-feed: jq is required for the HUD" >&2; exit 1; }
 RAW="$STATE_DIR/dictate.raw"; TR="$STATE_DIR/dictate.transcript"
 HD="$STATE_DIR/dictate.header"; FT="$STATE_DIR/dictate.footer"; MET="$STATE_DIR/dictate.metrics"
 

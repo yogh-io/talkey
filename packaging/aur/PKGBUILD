@@ -19,9 +19,9 @@ depends=(
 optdepends=(
   'whisper.cpp-model-large-v3-turbo: the default speech model (AUR) - talkey needs some model'
   'whisper.cpp-model-small: translate-to-English support (AUR)'
-  'eww: the live dictation HUD and the key cheat sheet'
+  'eww: the live dictation HUD and the key cheat sheet (AUR)'
   'inotify-tools: the live dictation HUD'
-  'jq: the confidence readout, and titles for archived recordings'
+  'jq: the live dictation HUD, the confidence readout, and titles for archived recordings'
   'libnotify: desktop notifications - the only feedback when the HUD is not installed'
   'ollama: auto-titled recordings in the archive'
   'xclip: paste mode (TALKEY_PASTE=1) instead of typing'
@@ -56,7 +56,8 @@ package() {
     bindings/i3.conf bindings/sxhkdrc bindings/xbindkeysrc bindings/README.md
   install -Dm644 -t "$pkgdir/usr/share/$pkgname/config" config/talkey.env.example
   install -Dm644 -t "$pkgdir/usr/share/$pkgname/integrations/eww" \
-    integrations/eww/eww.yuck integrations/eww/eww.scss integrations/eww/blank.svg
+    integrations/eww/eww.yuck integrations/eww/eww.scss integrations/eww/blank.svg \
+    integrations/eww/README.md
   install -Dm755 -t "$pkgdir/usr/share/$pkgname/integrations/eww" integrations/eww/eww-feed
 
   # User units, with the installed path baked in. talkey-hud and talkey-norepeat

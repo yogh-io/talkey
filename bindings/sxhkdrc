@@ -19,6 +19,8 @@
 #   - it does not start the background helpers. Use the user services:
 #       systemctl --user enable --now talkey-hud talkey-norepeat
 #     and set TALKEY_NOREPEAT_KEYCODES in ~/.config/talkey/talkey.env.
+#     For them to come back at the next login, your session has to reach
+#     graphical-session.target - see bindings/README.md.
 
 # --- dictate: hold to talk, release to type (tap = hands-free toggle) ---
 XF86Launch5

@@ -9,12 +9,20 @@ talkey needs two more things before it can hear you:
        systemctl --user enable --now talkey-whisper
 
   2) your key bindings - copy the i3 include and set your keycodes at the top:
-       cp /usr/share/talkey/i3/talkey.conf ~/.config/i3/talkey.conf
+       cp /usr/share/talkey/bindings/i3.conf ~/.config/i3/talkey.conf
        echo 'include ~/.config/i3/talkey.conf' >> ~/.config/i3/config
      find your keycodes with:
        xev | grep --line-buffered -oP 'keycode\s+\d+.*'
+     not on i3? sxhkd and xbindkeys are covered in:
+       /usr/share/talkey/bindings/README.md
 
 Then reload i3, hold your dictate key, speak, and release.
+
+Every default already works, so there is nothing else to set. If you want to
+change one:
+
+  mkdir -p ~/.config/talkey
+  cp /usr/share/talkey/config/talkey.env.example ~/.config/talkey/talkey.env
 EOF
 }
 
@@ -22,6 +30,6 @@ post_upgrade() {
   cat <<'EOF'
 
 Note: ~/.config/i3/talkey.conf is your copy - this upgrade did not touch it.
-Compare it against /usr/share/talkey/i3/talkey.conf if bindings changed.
+Compare it against /usr/share/talkey/bindings/i3.conf if bindings changed.
 EOF
 }

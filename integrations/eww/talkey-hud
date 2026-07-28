@@ -3,7 +3,7 @@
 # dictation is active by keying off the recorder pidfile that bin/talkey writes
 # ($STATE_DIR/dictate.pid) via inotify - event-driven, no polling, and talkey itself
 # stays renderer-agnostic (it only writes the state files this HUD reads). i3
-# starts it via exec_always (see talkey/i3/talkey.conf); it is
+# starts it via exec_always (see bindings/i3.conf); it is
 # single-instance, so reloads never stack a second watcher.
 #
 #   talkey-hud            # start the daemon + watch
@@ -46,7 +46,7 @@ open_args=()
 # derived from this script's own location, no hardcoded path.
 export TALKEY_EWW_DIR="$CFG"
 
-command -v "$EWW" >/dev/null 2>&1 || { echo "eww not installed (pacman -S eww, or AUR eww-git)"; exit 1; }
+command -v "$EWW" >/dev/null 2>&1 || { echo "eww not installed (AUR: eww)" >&2; exit 1; }
 
 HUD_LOG="$STATE_DIR/hud.log"
 

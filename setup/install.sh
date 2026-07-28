@@ -96,7 +96,11 @@ Put $REPO_DIR/bin on your PATH so the bare 'talkey' commands resolve.
 
 Not using i3? Start the helpers as services instead of from your WM:
   systemctl --user enable --now talkey-hud talkey-norepeat
-and set TALKEY_NOREPEAT_KEYCODES in ~/.config/talkey/talkey.env.
+and set TALKEY_NOREPEAT_KEYCODES in ~/.config/talkey/talkey.env. They are wanted
+by graphical-session.target, which a plain X11 session does not reach on its own,
+so start it from ~/.xinitrc for them to come back at the next login:
+  systemctl --user import-environment DISPLAY XAUTHORITY
+  systemctl --user start graphical-session.target
 
 To undo this checkout install later (it shadows a packaged one):
   systemctl --user disable --now talkey-whisper talkey-hud talkey-norepeat

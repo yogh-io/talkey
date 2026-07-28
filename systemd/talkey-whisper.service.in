@@ -11,8 +11,9 @@ After=default.target
 # Default model is large-v3-turbo: multilingual, far better than small on
 # accented or disfluent speech, and robust enough to accept an initial prompt
 # (see VOCAB_PROMPT in bin/talkey) without the drops the small model suffered.
-# Override with TALKEY_MODEL_NAME / TALKEY_MODEL in the environment file below.
-EnvironmentFile=-%h/.config/talkey/whisper.env
+# Override with TALKEY_MODEL_NAME / TALKEY_MODEL in ~/.config/talkey/talkey.env,
+# the same file the other units read.
+EnvironmentFile=-%h/.config/talkey/talkey.env
 ExecStart=@BINDIR@/talkey-whisper-server
 Restart=on-failure
 RestartSec=2

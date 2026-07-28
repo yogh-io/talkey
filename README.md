@@ -107,7 +107,10 @@ Put `bin/` on your `PATH`, or use absolute paths in the key bindings below.
 2. Copy the bindings and put your keycodes at the top of the copy:
 
    ```bash
-   cp /usr/share/talkey/i3/talkey.conf ~/.config/i3/talkey.conf
+   # installed from the AUR
+   cp /usr/share/talkey/bindings/i3.conf ~/.config/i3/talkey.conf
+   # from a checkout
+   cp bindings/i3.conf ~/.config/i3/talkey.conf
    ```
 
 3. Include it from `~/.config/i3/config`:
@@ -137,8 +140,9 @@ not otherwise use, within reach of a resting hand.
 | Auto-titled recordings | `ollama`, `jq` |
 
 A GPU is not required, but `large-v3-turbo` really wants one. On CPU, use
-`small.en` instead. With the CUDA toolkit installed, rebuild with
-`WHISPER_CUDA=1 setup/build-whisper.sh` and restart the service - transcription
+`small.en` instead. With the CUDA toolkit installed, build a GPU copy from a
+checkout - the build script is not part of the package - with
+`WHISPER_CUDA=1 setup/build-whisper.sh`, then restart the service. Transcription
 then comes back in well under a second. The build asks your card which
 architecture to target, so there is nothing to configure.
 
@@ -154,6 +158,7 @@ setting to use talkey.
 Settings live in `~/.config/talkey/talkey.env`:
 
 ```bash
+mkdir -p ~/.config/talkey
 cp /usr/share/talkey/config/talkey.env.example ~/.config/talkey/talkey.env
 ```
 

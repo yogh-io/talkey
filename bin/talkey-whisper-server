@@ -37,7 +37,7 @@ if [[ -z "$BIN" ]]; then
   done
 fi
 [[ -n "$BIN" ]] || {
-  echo "talkey: no whisper-server found. Install the 'whisper-cpp' package, or run setup/build-whisper.sh." >&2
+  echo "talkey: no whisper-server found. Install the 'whisper-cpp' package, or build one from a talkey checkout (setup/build-whisper.sh)." >&2
   exit 1
 }
 
@@ -49,7 +49,7 @@ if [[ -z "$MODEL" ]]; then
   done
 fi
 [[ -n "$MODEL" ]] || {
-  echo "talkey: no $MODEL_NAME model found. Install 'whisper.cpp-model-$MODEL_NAME' (AUR), or run setup/build-whisper.sh." >&2
+  echo "talkey: no $MODEL_NAME model found. Install 'whisper.cpp-model-$MODEL_NAME' (AUR), or build one from a talkey checkout (setup/build-whisper.sh)." >&2
   exit 1
 }
 

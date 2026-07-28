@@ -16,9 +16,9 @@ pkgbase = talkey
 	depends = python
 	optdepends = whisper.cpp-model-large-v3-turbo: the default speech model (AUR) - talkey needs some model
 	optdepends = whisper.cpp-model-small: translate-to-English support (AUR)
-	optdepends = eww: the live dictation HUD and the key cheat sheet
+	optdepends = eww: the live dictation HUD and the key cheat sheet (AUR)
 	optdepends = inotify-tools: the live dictation HUD
-	optdepends = jq: the confidence readout, and titles for archived recordings
+	optdepends = jq: the live dictation HUD, the confidence readout, and titles for archived recordings
 	optdepends = libnotify: desktop notifications - the only feedback when the HUD is not installed
 	optdepends = ollama: auto-titled recordings in the archive
 	optdepends = xclip: paste mode (TALKEY_PASTE=1) instead of typing
