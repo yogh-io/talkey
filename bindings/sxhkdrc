@@ -26,11 +26,13 @@ XF86Launch5
 @XF86Launch5
     talkey dictate release
 
-# --- dictate in a second language ---
+# --- dictate in your second language ---
+# Which language is TALKEY_LANG2 in ~/.config/talkey/talkey.env, so it is named
+# once rather than repeated in every binding file.
 XF86Tools
-    env TALKEY_LANG=nl talkey dictate press
+    talkey dictate-alt press
 @XF86Tools
-    env TALKEY_LANG=nl talkey dictate release
+    talkey dictate-alt release
 
 # --- memo, translate toggle, double-tap to restart ---
 XF86Launch6

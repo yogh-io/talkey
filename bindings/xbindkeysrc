@@ -24,11 +24,13 @@
 "talkey dictate release"
   Release + c:194
 
-# --- dictate in a second language ---
-"env TALKEY_LANG=nl talkey dictate press"
+# --- dictate in your second language ---
+# Which language is TALKEY_LANG2 in ~/.config/talkey/talkey.env, so it is named
+# once rather than repeated in every binding file.
+"talkey dictate-alt press"
   c:191
 
-"env TALKEY_LANG=nl talkey dictate release"
+"talkey dictate-alt release"
   Release + c:191
 
 # --- memo, translate toggle, double-tap to restart ---

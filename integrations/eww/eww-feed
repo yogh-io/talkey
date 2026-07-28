@@ -25,8 +25,8 @@ HD="$STATE_DIR/dictate.header"; FT="$STATE_DIR/dictate.footer"; MET="$STATE_DIR/
 
 # The hints name keys, so they follow the same labels as the cheat sheet - a
 # hardcoded "Square" tells most people to press a key they do not have.
-L_SUBMIT="${TALKEY_LABEL_SUBMIT:-⏎}"
-L_MEMO="${TALKEY_LABEL_MEMO:-■ Square}"
+L_SUBMIT="${TALKEY_LABEL_SUBMIT:-submit}"
+L_MEMO="${TALKEY_LABEL_MEMO:-memo}"
 
 LOUD="${TALKEY_PEAK_LOUD_DB:--10}"; LOW="${TALKEY_PEAK_LOW_DB:--20}"
 FLOOR="${TALKEY_LVL_FLOOR_DB:--45}"; WARN_S="${TALKEY_WARN_S:-25}"

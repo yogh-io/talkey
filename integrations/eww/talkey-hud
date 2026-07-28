@@ -60,10 +60,25 @@ close_hud() { ew close talkeyhud; }
 # binds nothing by them, they are only what the sheet says. Pushed into eww as
 # one JSON value so the widget stays a dumb renderer.
 help_json() {
+  # Language names are DERIVED from the codes you dictate in - "en" reads as EN,
+  # "nl" as NL - so no language is baked in as the assumed one. Override with
+  # TALKEY_LABEL_LANG / _LANG2 if you would rather see languages spelled out.
+  local l1 l2
+  l1="${TALKEY_LABEL_LANG:-$(printf '%s' "${TALKEY_LANG:-en}" | tr '[:lower:]' '[:upper:]')}"
+  if [[ -n "${TALKEY_LABEL_LANG2:-}" ]]; then
+    l2="$TALKEY_LABEL_LANG2"
+  elif [[ -n "${TALKEY_LANG2:-}" ]]; then
+    l2="$(printf '%s' "$TALKEY_LANG2" | tr '[:lower:]' '[:upper:]')"
+  else
+    l2=""      # no second language configured - the sheet drops that row
+  fi
+  # The defaults name the ROLE, not a key. Most keyboards have no circle, square
+  # or triangle to point at, so claiming one would be wrong for nearly everyone.
+  # Set TALKEY_LABEL_* to whatever is printed on the keys you actually bound.
   printf '{"dictate":"%s","dictate2":"%s","submit":"%s","memo":"%s","lang":"%s","lang2":"%s"}' \
-    "${TALKEY_LABEL_DICTATE:-●}" "${TALKEY_LABEL_DICTATE2:-Tools}" \
-    "${TALKEY_LABEL_SUBMIT:-⏎ Triangle}" "${TALKEY_LABEL_MEMO:-■ Square}" \
-    "${TALKEY_LABEL_LANG:-English}" "${TALKEY_LABEL_LANG2:-Dutch}"
+    "${TALKEY_LABEL_DICTATE:-dictate}" "${TALKEY_LABEL_DICTATE2:-2nd language}" \
+    "${TALKEY_LABEL_SUBMIT:-submit}" "${TALKEY_LABEL_MEMO:-memo}" \
+    "$l1" "$l2"
 }
 open_help()  { ew update "help=$(help_json)"; ew open talkeyhelp ${open_args[@]+"${open_args[@]}"}; }
 close_help() { ew close talkeyhelp; }

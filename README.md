@@ -44,14 +44,15 @@ issue descriptions. The things that are slow to type and easy to say.
 ## What the keys do
 
 **Dictate** - hold to talk, release to type. Tap instead of holding and it goes
-hands-free: tap once to start, again to stop. Bind a second key for a second
-language.
+hands-free: tap once to start, again to stop. If you work in two languages, set
+`TALKEY_LANG2` and bind a second key to `talkey dictate-alt` for it.
 
 **Memo / translate** - on its own, hold to record and release to play the clip
 straight back, so you can hear whether that came out right. During a dictation
-the same key toggles **translate to English** for the clip: dictate in Dutch,
-tap it, and English lands in your window. whisper's translate task only ever
-outputs English, so it is *your language* → English, not the other way. Tap it
+the same key toggles **translate to English** for the clip: dictate in whatever
+language you speak, tap it, and English lands in your window. whisper's
+translate task only ever outputs English, so this is *your language* to English
+and not the reverse - a limit of the model, not a setting. Tap it
 twice quickly during a dictation and it **restarts** instead: the take so far is
 thrown away and recording begins again, without letting go of the dictate key.
 
@@ -162,7 +163,7 @@ it. Only `TALKEY_*` names are read. Anything already set in the environment wins
 over the file, so a per-binding override still works:
 
 ```
-bindcode $key_dictate_nl exec --no-startup-id env TALKEY_LANG=nl talkey dictate press
+bindcode $key_dictate exec --no-startup-id env TALKEY_LANG=de talkey dictate press
 ```
 
 Key bindings themselves live in your i3 include, as variables at the top of the
@@ -172,7 +173,8 @@ The most useful settings:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `TALKEY_LANG` | `en` | whisper language code |
+| `TALKEY_LANG` | `en` | the language you dictate in |
+| `TALKEY_LANG2` | *(unset)* | a second language, for `talkey dictate-alt` |
 | `TALKEY_SOURCE` | `default` | microphone; see `pactl list sources short` |
 | `TALKEY_MODEL_NAME` | `large-v3-turbo` | which model the server loads |
 | `TALKEY_HUD_MONITOR` | *(primary)* | which display the HUD opens on, e.g. `DP-1` |
