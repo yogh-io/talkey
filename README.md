@@ -72,13 +72,18 @@ looking.
 ### Arch Linux
 
 ```bash
-yay -S talkey whisper.cpp-model-large-v3-turbo
-systemctl --user enable --now talkey-whisper
+yay -S talkey-git
+talkey-setup
 ```
 
-The model is a separate package because it is 1.6GB. Add
-`whisper.cpp-model-small` if you want the translate key, and `eww` for the live
-HUD - it is optional, but it is most of what makes this pleasant to use.
+`talkey-setup` asks the two questions no documentation can answer for you: which
+speech model you want (they range from 142MB to 1.6GB, and the right one depends
+on whether you have a GPU), and which keys you want to talk on - you press them,
+it reads the keycodes. It also starts the speech service and writes the bindings
+file. Safe to re-run; `talkey-setup keys` rebinds later.
+
+Add `eww` for the live HUD. It is optional, but it is most of what makes this
+pleasant to use.
 
 ### From a checkout
 
@@ -87,15 +92,18 @@ git clone https://github.com/yogh-io/talkey && cd talkey
 setup/install.sh
 ```
 
-The installer checks your dependencies, builds whisper.cpp into
-`~/.local/opt/whisper.cpp` if no packaged copy exists, downloads the model to
-`~/.local/share/whisper/`, then installs and starts the speech-to-text service
-as a systemd user unit. Binaries and models live outside the repo; only scripts
-and configuration are tracked.
+The installer does the two things a package cannot - builds whisper.cpp into
+`~/.local/opt/whisper.cpp` if no packaged copy exists, and installs the systemd
+user units pointing at your checkout - then runs the same `talkey-setup`. Model,
+service and keys are handled identically either way. Binaries and models live
+outside the repo; only scripts and configuration are tracked.
 
-Put `bin/` on your `PATH`, or use absolute paths in the key bindings below.
+Put `bin/` on your `PATH`, or use absolute paths in the key bindings.
 
 ### Bind your keys
+
+`talkey-setup keys` does all of this - it reads your keycodes off the keyboard
+and writes the file. The manual route, if you would rather:
 
 1. Find the keycodes. Run this, then press each key with the `xev` window
    focused and read the number after `keycode`:
@@ -120,6 +128,9 @@ Put `bin/` on your `PATH`, or use absolute paths in the key bindings below.
    ```
 
 4. Reload i3 with `Mod+Shift+R`. Hold your dictate key, say something, release.
+
+Either way, step 3 is yours to do: `talkey-setup` writes its own file and prints
+the `include` line, but never edits your i3 config.
 
 The defaults are a Keychron K10's media keys, which is simply what this was
 written on. Any four keys work - the ones that suit this best are keys you do

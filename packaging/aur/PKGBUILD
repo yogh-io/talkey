@@ -30,6 +30,7 @@ optdepends=(
   'jq: the live dictation HUD, the confidence readout, and titles for archived recordings'
   'libnotify: desktop notifications - the only feedback when the HUD is not installed'
   'ollama: auto-titled recordings in the archive'
+  'xorg-xev: lets talkey-setup read your keycodes off the keyboard'
   'xclip: paste mode (TALKEY_PASTE=1) instead of typing'
   'sxhkd: key bindings without i3'
   'xbindkeys: key bindings without i3'
@@ -61,6 +62,7 @@ package() {
   # land in the same bindir.
   install -Dm755 -t "$pkgdir/usr/bin" \
     bin/talkey \
+    bin/talkey-setup \
     bin/talkey-diag \
     bin/talkey-mic-check \
     bin/talkey-replay \

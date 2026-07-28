@@ -1,0 +1,418 @@
+#!/usr/bin/env bash
+# talkey-setup - the interactive first run: pick a model, install it, start the
+# server, and turn the keys you actually press into a bindings file.
+#
+# The two things a README cannot do for you are choosing a model (the sizes and
+# tradeoffs are real, and the right answer depends on your GPU) and finding a
+# keycode (which needs the key in your hand). This does both, and nothing else
+# that documentation already covers.
+#
+#   talkey-setup            # everything, in order
+#   talkey-setup model      # just the model
+#   talkey-setup keys       # just the key bindings - re-run to rebind later
+#   talkey-setup service    # just the whisper service
+#
+# Safe to re-run: every step reports what is already done and moves on. It never
+# edits a file it did not create - your WM config is yours, and the last step
+# prints the one line to add to it.
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+for _l in "$SCRIPT_DIR/../lib" /usr/share/talkey/lib; do
+  [[ -f "$_l/common.sh" ]] && { . "$_l/common.sh"; break; }
+done
+[[ -n "${DATA_DIR:-}" ]] || { echo "talkey-setup: cannot find lib/common.sh" >&2; exit 1; }
+
+CONFIG_DIR="$(dirname "$TALKEY_CONFIG")"
+MODEL_DIR="${WHISPER_MODEL_DIR:-$HOME/.local/share/whisper}"
+
+# --- output ----------------------------------------------------------------
+if [[ -t 1 ]]; then
+  B=$'\e[1m'; DIM=$'\e[2m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; R=$'\e[0m'
+else
+  B=""; DIM=""; GREEN=""; YELLOW=""; R=""
+fi
+step()  { printf '\n%s== %s%s\n' "$B" "$*" "$R"; }
+ok()    { printf '   %s+%s %s\n' "$GREEN" "$R" "$*"; }
+info()  { printf '   %s-%s %s\n' "$DIM" "$R" "$*"; }
+warn()  { printf '   %s!%s %s\n' "$YELLOW" "$R" "$*"; }
+die()   { printf '\ntalkey-setup: %s\n' "$*" >&2; exit 1; }
+
+ask_yn() {  # ask_yn "question" [y|n] -> 0 for yes
+  local q="$1" def="${2:-y}" a prompt="[Y/n]"
+  [[ "$def" == n ]] && prompt="[y/N]"
+  while true; do
+    read -r -p "   $q $prompt " a
+    a="${a:-$def}"
+    case "${a,,}" in y|yes) return 0 ;; n|no) return 1 ;; esac
+  done
+}
+
+# choose "question" "label1" "label2" ... -> index (1-based) on stdout
+# The menu goes to stderr for the same reason capture_keycode's prompt does: the
+# caller reads the answer from stdout, so anything printed there is swallowed.
+choose() {
+  local q="$1"; shift
+  local n=$# i a
+  printf '   %s\n' "$q" >&2
+  for ((i=1; i<=n; i++)); do printf '     %d) %s\n' "$i" "${!i}" >&2; done
+  while true; do
+    read -r -p "   choice [1-$n]: " a
+    [[ "$a" =~ ^[0-9]+$ ]] && (( a >= 1 && a <= n )) && { printf '%s' "$a"; return 0; }
+  done
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# --- config file -----------------------------------------------------------
+# Written one key at a time so re-running never clobbers settings from an
+# earlier run, or anything you added by hand.
+config_set() {
+  local key="$1" val="$2"
+  mkdir -p "$CONFIG_DIR"
+  if [[ ! -f "$TALKEY_CONFIG" ]]; then
+    if [[ -f "$DATA_DIR/config/talkey.env.example" ]]; then
+      cp "$DATA_DIR/config/talkey.env.example" "$TALKEY_CONFIG"
+      info "created $TALKEY_CONFIG from the example"
+    else
+      : > "$TALKEY_CONFIG"
+    fi
+  fi
+  if grep -qE "^[#[:space:]]*${key}=" "$TALKEY_CONFIG"; then
+    # Rewrite in place, commented-out example lines included - that is where the
+    # setting is documented, so the value belongs there rather than appended
+    # somewhere else in the file saying the opposite.
+    sed -i -E "s|^[#[:space:]]*${key}=.*|${key}=${val}|" "$TALKEY_CONFIG"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$TALKEY_CONFIG"
+  fi
+  ok "$key=$val"
+}
+
+# ===========================================================================
+# deps
+# ===========================================================================
+step_deps() {
+  step "checking what is installed"
+  local missing=()
+  for c in ffmpeg paplay xdotool xset curl; do
+    have "$c" || missing+=("$c")
+  done
+  if (( ${#missing[@]} )); then
+    warn "missing, and dictation will not work without them: ${missing[*]}"
+    die "install those first (pacman -S ffmpeg libpulse xdotool xorg-xset curl)"
+  fi
+  ok "core tools present"
+
+  local soft=()
+  have eww        || soft+=("eww (the HUD and cheat sheet - AUR)")
+  have inotifywait|| soft+=("inotify-tools (the HUD)")
+  have jq         || soft+=("jq (the HUD, confidence readout)")
+  have python3    || soft+=("python (live text in the HUD as you speak)")
+  have notify-send|| soft+=("libnotify (desktop notifications)")
+  if (( ${#soft[@]} )); then
+    info "optional, everything still dictates without them:"
+    printf '     %s\n' "${soft[@]}"
+  fi
+}
+
+# ===========================================================================
+# model
+# ===========================================================================
+# Sizes are the real download, not the parameter count. The tradeoff that
+# matters: turbo is much better on accented or disfluent speech but wants a GPU,
+# and it dropped whisper's translate task, which only the small multilingual
+# model still has.
+MODELS=(
+  "large-v3-turbo|1.6 GB|best accuracy, multilingual. Slow on CPU - wants a GPU"
+  "small|466 MB|decent, multilingual, and the only one here that can translate"
+  "small.en|466 MB|English only, comfortable on CPU"
+  "base.en|142 MB|English only, fastest, noticeably rougher"
+)
+
+installed_models() {
+  local f
+  for f in "$MODEL_DIR"/ggml-*.bin /usr/share/whisper.cpp-model-*/ggml-*.bin; do
+    [[ -f "$f" ]] || continue
+    printf '%s\n' "$f"
+  done
+}
+
+model_download() {  # model_download <name>
+  local name="$1" url dest tmp
+  url="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${name}.bin"
+  dest="$MODEL_DIR/ggml-${name}.bin"
+  mkdir -p "$MODEL_DIR"
+  tmp="$dest.part"
+  info "downloading to $dest"
+  # --fail so an HTML error page never lands as a .bin, -C - so a re-run resumes
+  # instead of starting a 1.6GB download over.
+  if curl -fL --progress-bar -C - -o "$tmp" "$url"; then
+    mv -f "$tmp" "$dest"
+    ok "model ready: $dest"
+    return 0
+  fi
+  rm -f "$tmp"
+  warn "download failed: $url"
+  return 1
+}
+
+model_via_helper() {  # model_via_helper <helper> <name>
+  local helper="$1" name="$2" pkg="whisper.cpp-model-${name}"
+  info "running: $helper -S $pkg"
+  if "$helper" -S --needed "$pkg"; then
+    ok "installed $pkg"
+    return 0
+  fi
+  warn "$helper could not install $pkg"
+  return 1
+}
+
+step_model() {
+  step "speech model"
+  local have_list
+  have_list="$(installed_models)"
+  if [[ -n "$have_list" ]]; then
+    ok "already installed:"
+    while IFS= read -r f; do printf '     %s\n' "$f"; done <<<"$have_list"
+    ask_yn "add another model?" n || return 0
+  else
+    info "talkey needs one. Nothing works without it."
+  fi
+
+  local labels=() m name size desc
+  for m in "${MODELS[@]}"; do
+    IFS='|' read -r name size desc <<<"$m"
+    labels+=("$name  ($size) - $desc")
+  done
+  labels+=("skip - I will install a model myself")
+
+  local pick
+  pick="$(choose "which model?" "${labels[@]}")"
+  (( pick > ${#MODELS[@]} )) && { info "skipped - set TALKEY_MODEL_NAME once you have one"; return 0; }
+  IFS='|' read -r name size desc <<<"${MODELS[$((pick-1))]}"
+
+  # Two ways in. The AUR package is pacman-managed and shared; the direct
+  # download needs no helper and lands where talkey-whisper-server also probes.
+  local helper=""
+  for h in yay paru; do have "$h" && { helper="$h"; break; }; done
+  local method=1
+  if [[ -n "$helper" ]]; then
+    method="$(choose "how should it be installed?" \
+      "download it to $MODEL_DIR ($size)" \
+      "install the AUR package whisper.cpp-model-$name with $helper")"
+  else
+    info "no AUR helper found, downloading directly"
+  fi
+
+  if (( method == 2 )); then
+    model_via_helper "$helper" "$name" || return 1
+  else
+    model_download "$name" || return 1
+  fi
+
+  # Only write the setting when it is not what talkey already defaults to, so
+  # the config stays a list of your choices rather than a copy of the defaults.
+  [[ "$name" != "large-v3-turbo" ]] && config_set TALKEY_MODEL_NAME "$name"
+  return 0
+}
+
+# ===========================================================================
+# service
+# ===========================================================================
+step_service() {
+  step "speech-to-text service"
+  if ! have systemctl; then
+    warn "no systemd - start the server yourself: talkey-whisper-server"
+    return 0
+  fi
+  local unit=talkey-whisper.service
+  if ! systemctl --user cat "$unit" >/dev/null 2>&1; then
+    warn "$unit is not installed"
+    info "from a checkout, run setup/install.sh - it installs the units"
+    return 1
+  fi
+
+  if systemctl --user is-active --quiet "$unit"; then
+    ok "already running"
+  else
+    ask_yn "start it now, and at every login?" || { info "skipped"; return 0; }
+    systemctl --user enable --now "$unit" || { warn "could not start $unit"; return 1; }
+  fi
+
+  # A 1.6GB model off cold cache takes far longer than a second to load, so a
+  # single immediate check would report a fault that is not there.
+  local host="${TALKEY_WHISPER_HOST:-127.0.0.1}" port="${TALKEY_WHISPER_PORT:-8910}"
+  printf '   %s-%s waiting for the server on %s:%s ' "$DIM" "$R" "$host" "$port"
+  local up=0 _
+  for _ in $(seq 1 60); do
+    if curl -sS --max-time 2 -o /dev/null "http://$host:$port/" 2>/dev/null; then up=1; break; fi
+    printf '.'; sleep 1
+  done
+  printf '\n'
+  if (( up )); then
+    ok "responding on $host:$port"
+  else
+    warn "no answer within 60s"
+    info "check: systemctl --user status $unit"
+    info "       journalctl --user -u $unit -n 30"
+    return 1
+  fi
+}
+
+# ===========================================================================
+# keys
+# ===========================================================================
+# xev opens its own window and reports only what is typed while that window has
+# focus, so this never sees keystrokes meant for anything else. xdotool focuses
+# it for you.
+# Only the keycode goes to stdout - the caller reads it from there. Everything
+# a human reads goes to stderr, or it would be captured as the value.
+capture_keycode() {  # capture_keycode "role" -> keycode on stdout, empty if skipped
+  local role="$1" out wid code="" _
+  out="$(mktemp)"; : > "$out"
+  xev -event keyboard > "$out" 2>/dev/null &
+  local xevpid=$!
+  for _ in $(seq 1 30); do
+    wid="$(xdotool search --name '^Event Tester$' 2>/dev/null | head -1)"
+    [[ -n "$wid" ]] && break
+    sleep 0.1
+  done
+  if [[ -z "$wid" ]]; then
+    kill "$xevpid" 2>/dev/null; rm -f "$out"
+    warn "xev did not open a window"
+    return 1
+  fi
+  xdotool windowactivate --sync "$wid" 2>/dev/null
+  printf '   press the key for %s%s%s (15s, or wait to keep the current one) ' "$B" "$role" "$R" >&2
+  for _ in $(seq 1 150); do
+    code="$(grep -A3 '^KeyPress' "$out" 2>/dev/null | grep -oP 'keycode\s+\K[0-9]+' | head -1)"
+    [[ -n "$code" ]] && break
+    sleep 0.1
+  done
+  kill "$xevpid" 2>/dev/null; wait "$xevpid" 2>/dev/null
+  rm -f "$out"
+  [[ -n "$code" ]] || { printf 'skipped\n' >&2; return 1; }
+  printf 'keycode %s\n' "$code" >&2
+  printf '%s\n' "$code"
+}
+
+# The bindings file keeps every keycode in `set $key_* NNN` lines at the top,
+# specifically so only those lines ever need rewriting.
+write_i3_bindings() {  # write_i3_bindings <dest> <dictate> <alt> <memo> <submit>
+  local dest="$1" d="$2" a="$3" m="$4" s="$5" src="$DATA_DIR/bindings/i3.conf"
+  [[ -f "$src" ]] || { warn "missing $src"; return 1; }
+  local tmp; tmp="$(mktemp)"
+  sed -E \
+    -e "s|^set \\\$key_dictate .*|set \$key_dictate $d|" \
+    -e "s|^set \\\$key_dictate_alt .*|set \$key_dictate_alt $a|" \
+    -e "s|^set \\\$key_memo .*|set \$key_memo $m|" \
+    -e "s|^set \\\$key_submit .*|set \$key_submit $s|" \
+    "$src" > "$tmp"
+  mv -f "$tmp" "$dest"
+  ok "wrote $dest"
+}
+
+step_keys() {
+  step "key bindings"
+  if ! have xev; then
+    warn "xev is not installed, so keys cannot be read from the keyboard"
+    info "install it (pacman -S xorg-xev) and re-run: talkey-setup keys"
+    ask_yn "type the keycodes in by hand instead?" n || return 1
+  fi
+
+  local wm="" pick
+  if pgrep -x i3 >/dev/null 2>&1; then
+    wm=i3; ok "i3 is running"
+  else
+    pick="$(choose "which do you use for key bindings?" \
+      "i3" "sxhkd" "xbindkeys" "none of these - just show me the keycodes")"
+    case "$pick" in 1) wm=i3 ;; 2) wm=sxhkd ;; 3) wm=xbindkeys ;; 4) wm=none ;; esac
+  fi
+
+  # Defaults are the Keychron K10 media keys this was written on - fine as a
+  # starting point, wrong for almost everyone, which is the entire reason for
+  # asking.
+  local -A code=([dictate]=194 [dictate_alt]=191 [memo]=193 [submit]=192)
+  local -A prompt=(
+    [dictate]="dictate - hold to talk"
+    [submit]="submit - send / Enter"
+    [memo]="memo - translate toggle, double-tap restart, hold for a memo"
+    [dictate_alt]="dictate in a second language (optional)"
+  )
+  local role got
+  for role in dictate submit memo dictate_alt; do
+    if have xev; then
+      if got="$(capture_keycode "${prompt[$role]}")" && [[ -n "$got" ]]; then
+        code[$role]="$got"
+      else
+        info "kept default ${code[$role]} for $role"
+      fi
+    else
+      read -r -p "   keycode for ${prompt[$role]} [${code[$role]}]: " got
+      [[ "$got" =~ ^[0-9]+$ ]] && code[$role]="$got"
+    fi
+  done
+
+  printf '\n'
+  info "dictate=${code[dictate]} submit=${code[submit]} memo=${code[memo]} alt=${code[dictate_alt]}"
+
+  # talkey-norepeat needs the same codes, and a systemd unit has no argument
+  # list - so they have to live in the config for the non-i3 paths to work.
+  config_set TALKEY_NOREPEAT_KEYCODES "${code[dictate]} ${code[dictate_alt]} ${code[memo]} ${code[submit]}"
+
+  case "$wm" in
+    i3)
+      local dest="${XDG_CONFIG_HOME:-$HOME/.config}/i3/talkey.conf"
+      if [[ -f "$dest" ]]; then
+        ask_yn "$dest exists - overwrite it?" n || { info "left it alone"; return 0; }
+        cp -f "$dest" "$dest.bak"; info "kept a copy at $dest.bak"
+      fi
+      mkdir -p "$(dirname "$dest")"
+      write_i3_bindings "$dest" "${code[dictate]}" "${code[dictate_alt]}" \
+        "${code[memo]}" "${code[submit]}" || return 1
+      printf '\n   %sOne line left, in your i3 config:%s\n\n' "$B" "$R"
+      printf '     include %s\n\n' "${dest/#$HOME/~}"
+      info "then reload i3 (Mod+Shift+R)"
+      ;;
+    sxhkd|xbindkeys)
+      local src="$DATA_DIR/bindings/sxhkdrc"
+      [[ "$wm" == xbindkeys ]] && src="$DATA_DIR/bindings/xbindkeysrc"
+      printf '\n   %s%s uses its own format - start from:%s\n' "$B" "$wm" "$R"
+      printf '     %s\n' "$src"
+      info "put the keycodes above into it, then start the helpers:"
+      info "  systemctl --user enable --now talkey-hud talkey-norepeat"
+      ;;
+    none)
+      info "your keycodes are above - bind them however you like"
+      ;;
+  esac
+}
+
+# ===========================================================================
+main() {
+  local what="${1:-all}"
+  case "$what" in
+    -h|--help|help)
+      sed -n '2,17p' "$(readlink -f "$0")" | sed 's/^# \?//'
+      exit 0 ;;
+    all|model|service|keys)
+      # These ask questions. Run blind - a pacman hook, a script - they would
+      # either hang on a read or silently take defaults nobody chose.
+      [[ -t 0 ]] || die "'$what' is interactive - run it in a terminal" ;;
+  esac
+  case "$what" in
+    all)     step_deps; step_model; step_service; step_keys ;;
+    model)   step_model ;;
+    service) step_service ;;
+    keys)    step_keys ;;
+    deps)    step_deps ;;
+    *) die "unknown step '$what' - try: all, model, service, keys, deps" ;;
+  esac
+  if [[ "$what" == all ]]; then
+    printf '\n%sdone.%s hold your dictate key, speak, release.\n' "$B" "$R"
+    printf 'settings live in %s - talkey-setup keys rebinds later.\n' "${TALKEY_CONFIG/#$HOME/~}"
+  fi
+}
+
+main "$@"
