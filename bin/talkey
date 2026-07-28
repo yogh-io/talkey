@@ -208,7 +208,14 @@ ollama_title() {
       -d "$(jq -nc --arg m "$OLLAMA_MODEL" --arg p "$prompt" \
               '{model:$m,prompt:$p,stream:false,options:{temperature:0.1}}')" 2>/dev/null)" || return 0
   raw="$(printf '%s' "$resp" | jq -r '.response // empty' 2>/dev/null)"
-  [[ -n "$raw" ]] || return 0
+  # No Ollama at all is fine and stays quiet - the feature is optional and curl
+  # already returned above. But an Ollama that answers without a usable response
+  # is a misconfiguration, nearly always TALKEY_OLLAMA_MODEL not being pulled,
+  # and silently timestamping every recording forever is how that goes unnoticed.
+  if [[ -z "$raw" ]]; then
+    log "no title: ollama reachable but gave nothing for model=$OLLAMA_MODEL (${resp:0:100})"
+    return 0
+  fi
   # Drop any <think> block, lowercase, strip apostrophes, keep first 3 words.
   printf '%s' "$raw" \
     | sed '/<think>/,/<\/think>/d' \

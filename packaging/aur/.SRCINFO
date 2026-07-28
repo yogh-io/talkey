@@ -21,7 +21,7 @@ pkgbase = talkey-git
 	optdepends = python: live word-by-word text in the HUD as you speak - dictation itself does not need it
 	optdepends = jq: the live dictation HUD, the confidence readout, and titles for archived recordings
 	optdepends = libnotify: desktop notifications - the only feedback when the HUD is not installed
-	optdepends = ollama: auto-titled recordings in the archive
+	optdepends = ollama: names archived recordings after what you said - needs a model pulled too (default qwen2.5:3b)
 	optdepends = xorg-xev: lets talkey-setup read your keycodes off the keyboard
 	optdepends = xclip: paste mode (TALKEY_PASTE=1) instead of typing
 	optdepends = sxhkd: key bindings without i3

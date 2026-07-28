@@ -29,7 +29,7 @@ optdepends=(
   'python: live word-by-word text in the HUD as you speak - dictation itself does not need it'
   'jq: the live dictation HUD, the confidence readout, and titles for archived recordings'
   'libnotify: desktop notifications - the only feedback when the HUD is not installed'
-  'ollama: auto-titled recordings in the archive'
+  'ollama: names archived recordings after what you said - needs a model pulled too (default qwen2.5:3b)'
   'xorg-xev: lets talkey-setup read your keycodes off the keyboard'
   'xclip: paste mode (TALKEY_PASTE=1) instead of typing'
   'sxhkd: key bindings without i3'

@@ -160,15 +160,16 @@ not otherwise use, within reach of a resting hand.
 
 | | |
 |---|---|
-| Required | X11, `bash` 4+, `whisper-cpp`, `ffmpeg`, `xdotool`, `xset`, `curl`, `python3` |
+| Required | X11, `bash` 4+, `whisper-cpp`, `ffmpeg`, `xdotool`, `xset`, `curl` |
 | Sound | a PulseAudio-compatible server: PulseAudio itself, or PipeWire with `pipewire-pulse`. Recording is `ffmpeg -f pulse`, playback is `paplay`. |
 | A speech model | `whisper.cpp-model-large-v3-turbo` (default), or any ggml model |
 | Live HUD and cheat sheet | `eww`, `inotify-tools`, `jq` |
+| Live text in the HUD as you speak | `python` - without it the HUD still shows state and the meter |
 | Translate key | `whisper.cpp-model-small` - turbo dropped whisper's translate task |
 | Key bindings | your window manager, or `sxhkd` / `xbindkeys` |
 | Notifications | `libnotify` - the only feedback if you skip the HUD |
 | Paste mode | `xclip` |
-| Auto-titled recordings | `ollama`, `jq` |
+| Auto-titled recordings | `ollama` **and a model pulled into it** (`ollama pull qwen2.5:3b`), plus `jq` |
 
 A GPU is not required, but `large-v3-turbo` really wants one. On CPU, use
 `small.en` instead. With the CUDA toolkit installed, build a GPU copy from a
@@ -221,12 +222,36 @@ The most useful settings:
 | `TALKEY_SOUNDS` | `1` | `0` for silence |
 | `TALKEY_ARCHIVE` | `1` | keep a `.wav` of every recording |
 | `TALKEY_ARCHIVE_DIR` | `~/.local/share/talkey/recordings` | where those go |
+| `TALKEY_ARCHIVE_TITLE` | `1` | name those recordings after what you said, using Ollama |
+| `TALKEY_OLLAMA_MODEL` | `qwen2.5:3b` | which Ollama model writes the name - it must be pulled |
+| `TALKEY_OLLAMA_URL` | `http://localhost:11434/api/generate` | where Ollama is |
 | `TALKEY_HOLD_MS` | `450` | longer press than this counts as hold, shorter as a tap |
 | `TALKEY_MAX_REC_S` | `120` | hard cap on one recording, so a stuck key cannot run away |
 
 See [`config/talkey.env.example`](config/talkey.env.example) for the complete
 list, including HUD geometry, meter thresholds, external tool paths and the
 labels on the help sheet.
+
+### Recordings named after what you said
+
+Every dictation is kept as a `.wav`, and a directory of `dictate-20260728-1412.wav`
+is not something anyone browses twice. So talkey asks a local Ollama for two or
+three keywords from the transcript and puts them in the filename instead:
+`dictate-20260728-1412-buy-groceries-pick.wav`.
+
+This needs two things, not one: `ollama` installed **and** a model pulled into
+it. The default is `qwen2.5:3b`, chosen because it is small and fast - a
+"thinking" model spends longer deciding than the dictation took to record.
+
+```bash
+ollama pull qwen2.5:3b
+```
+
+Without Ollama running, recordings simply keep their timestamp name and nothing
+is sent anywhere. With Ollama running but the model missing, talkey now says so
+in `$XDG_RUNTIME_DIR/talkey/log` rather than leaving you to wonder why names
+never appear. `TALKEY_ARCHIVE_TITLE=0` turns it off; see
+[Privacy](#privacy-what-is-stored-and-where) for what gets sent where.
 
 ## How it works
 
