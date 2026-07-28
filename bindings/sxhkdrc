@@ -1,0 +1,47 @@
+# talkey bindings for sxhkd - works under any X11 window manager.
+#
+#   cp /usr/share/talkey/bindings/sxhkdrc ~/.config/sxhkd/sxhkdrc   (or append)
+#   sxhkd &                                                        (if not already running)
+#   pkill -USR1 -x sxhkd                                           (reload)
+#
+# sxhkd binds key RELEASE with a leading '@', which is what makes hold-to-talk
+# work: press starts recording, release transcribes and types.
+#
+# These are keysyms, not keycodes. Find yours with `xev` and read the name in
+# parentheses. The names below are a Keychron K10's media keys; yours will
+# differ. If a key emits no keysym at all, use the i3 bindings (which take raw
+# keycodes) or remap it with xmodmap first.
+#
+# Two things sxhkd does not do, because it is only a hotkey daemon:
+#   - it cannot float or unfocus the HUD window. eww already asks not to be
+#     focused, which most window managers honour; if yours steals focus, add a
+#     rule for the window titled "Eww - talkeyhud".
+#   - it does not start the background helpers. Use the user services:
+#       systemctl --user enable --now talkey-hud talkey-norepeat
+#     and set TALKEY_NOREPEAT_KEYCODES in ~/.config/talkey/talkey.env.
+
+# --- dictate: hold to talk, release to type (tap = hands-free toggle) ---
+XF86Launch5
+    talkey dictate press
+@XF86Launch5
+    talkey dictate release
+
+# --- dictate in a second language ---
+XF86Tools
+    env TALKEY_LANG=nl talkey dictate press
+@XF86Tools
+    env TALKEY_LANG=nl talkey dictate release
+
+# --- memo, translate toggle, double-tap to restart ---
+XF86Launch6
+    talkey memo press
+@XF86Launch6
+    talkey memo release
+
+# --- submit: Enter, or cycle the pending action mid-dictation ---
+XF86Launch7
+    talkey submit
+
+# --- the key cheat sheet ---
+super + c
+    talkey help

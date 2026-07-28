@@ -1,0 +1,19 @@
+[Unit]
+Description=talkey - keep X auto-repeat off for the dictation keys
+Documentation=https://github.com/yogh-io/talkey
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# Set TALKEY_NOREPEAT_KEYCODES in ~/.config/talkey/talkey.env to the same
+# keycodes your bindings use, e.g. TALKEY_NOREPEAT_KEYCODES=194 191 193 192
+# Without it this exits immediately, since it has no way to guess your keys.
+#
+# It needs DISPLAY, same as the HUD service.
+EnvironmentFile=-%h/.config/talkey/talkey.env
+ExecStart=@BINDIR@/talkey-norepeat
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

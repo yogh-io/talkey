@@ -49,6 +49,7 @@ TRANSLATE_REQ="$STATE_DIR/translate.requested"   # Square toggles this mid-dicta
 TARGET_WIN="$STATE_DIR/dictate.target_win"    # X window id to keep typing into
 DIAG="$STATE_DIR/live.diag"                    # per-dictation live-path trace (bin/talkey-diag reads it)
 STT_METRICS="$STATE_DIR/dictate.sttmetrics"    # "avg_logprob silence_pct peak_db" of the final transcription (stt writes, transcribe reads - side channel out of stt's subshell)
+HELP_ON="$STATE_DIR/help.on"                   # cheat sheet toggle - the renderer watches this
 METRICS_FILE="$STATE_DIR/dictate.metrics"      # display "conf% silence% peak_db cflag pflag" the overlay renders (passed as VO_METRICS)
 
 # --- tunables (override via env) -------------------------------------------
@@ -64,13 +65,13 @@ WHISPER_URL="${TALKEY_WHISPER_URL:-http://127.0.0.1:8910/inference}"
 # translate path needs these, so a setup without them still dictates fine.
 WHISPER_CLI="${TALKEY_WHISPER_CLI:-}"
 if [[ -z "$WHISPER_CLI" ]]; then
-  for c in /usr/bin/whisper-cli "$HOME/.local/opt/whisper.cpp/build/bin/whisper-cli"; do
+  for c in "$HOME/.local/opt/whisper.cpp/build/bin/whisper-cli" /usr/bin/whisper-cli; do
     if [[ -x "$c" ]]; then WHISPER_CLI="$c"; break; fi
   done
 fi
 TRANSLATE_MODEL="${TALKEY_TRANSLATE_MODEL:-}"
 if [[ -z "$TRANSLATE_MODEL" ]]; then
-  for c in /usr/share/whisper.cpp-model-small/ggml-small.bin "$HOME/.local/share/whisper/ggml-small.bin"; do
+  for c in "$HOME/.local/share/whisper/ggml-small.bin" /usr/share/whisper.cpp-model-small/ggml-small.bin; do
     if [[ -f "$c" ]]; then TRANSLATE_MODEL="$c"; break; fi
   done
 fi
@@ -125,7 +126,14 @@ MAX_REC_S="${TALKEY_MAX_REC_S:-120}"           # HARD cap on one recording's len
                                               # re-transcribes that ever-growing buffer until every core pegs and
                                               # the machine freezes. No legit dictation runs this long; the cap
                                               # is the safety net, not a usage limit.
-PROMPT_FILE="${TALKEY_PROMPT_FILE:-$DATA_DIR/vocabulary.txt}"
+# Your own vocabulary wins over the shipped example, which is read-only and
+# replaced on upgrade when talkey came from a package.
+PROMPT_FILE="${TALKEY_PROMPT_FILE:-}"
+if [[ -z "$PROMPT_FILE" ]]; then
+  for c in "${XDG_CONFIG_HOME:-$HOME/.config}/talkey/vocabulary.txt" "$DATA_DIR/vocabulary.txt"; do
+    if [[ -f "$c" ]]; then PROMPT_FILE="$c"; break; fi
+  done
+fi
 ARCHIVE="${TALKEY_ARCHIVE:-1}"                 # 1 = save each recording's audio
 ARCHIVE_DIR="${TALKEY_ARCHIVE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/talkey/recordings}"
 ARCHIVE_TITLE="${TALKEY_ARCHIVE_TITLE:-1}"     # 1 = name recordings with an Ollama-made title
@@ -138,20 +146,12 @@ OLLAMA_TIMEOUT="${TALKEY_OLLAMA_TIMEOUT:-12}"
 FFMPEG="${TALKEY_FFMPEG:-ffmpeg}"
 XDOTOOL="${TALKEY_XDOTOOL:-xdotool}"
 XCLIP="${TALKEY_XCLIP:-xclip}"
-PLAYER="${TALKEY_PLAYER:-paplay}"              # tones + memo playback
-PLAYER_FALLBACK="${TALKEY_PLAYER_FALLBACK:-aplay -q}"   # used only if $PLAYER is missing
+PLAYER="${TALKEY_PLAYER:-paplay}"              # tones + memo playback (PulseAudio/PipeWire)
 
 # Audio format. whisper wants 16kHz mono; changing these is for oddball capture
 # hardware, not for tuning quality.
 SAMPLE_RATE="${TALKEY_SAMPLE_RATE:-16000}"
 CHANNELS="${TALKEY_CHANNELS:-1}"
-
-# The help overlay window (talkey help).
-HELP_TERM="${TALKEY_HELP_TERM:-alacritty}"
-HELP_CLASS="${TALKEY_HELP_CLASS:-talkeyhelp}"  # must match the i3 for_window rule
-HELP_COLS="${TALKEY_HELP_COLS:-62}"
-HELP_LINES="${TALKEY_HELP_LINES:-14}"
-HELP_PAD="${TALKEY_HELP_PAD:-16}"
 # ---------------------------------------------------------------------------
 
 now_ms() { date +%s%3N; }
@@ -311,7 +311,7 @@ stt() {
       return 1
     fi
     text="$("$WHISPER_CLI" -m "$TRANSLATE_MODEL" -l "$LANG_CODE" -tr -nt -f "$wav" 2>>"$STATE_DIR/log")" || return 1
-    printf '%s %s %s' "" "$sil" "$peak" > "$STT_METRICS"
+    printf '%s %s %s' none "$sil" "$peak" > "$STT_METRICS"
   else
     # TRANSCRIBE: the warm large-v3-turbo server over HTTP.
     local -a args=(-sS --max-time 60 -F "file=@$wav" -F temperature=0 -F "language=$LANG_CODE")
@@ -333,7 +333,7 @@ stt() {
     else
       text="$(curl "${args[@]}" -F response_format=text "$WHISPER_URL" 2>>"$STATE_DIR/log")" || return 1
     fi
-    printf '%s %s %s' "$alp" "$sil" "$peak" > "$STT_METRICS"
+    printf '%s %s %s' "${alp:-none}" "$sil" "$peak" > "$STT_METRICS"
   fi
   # Flatten newlines to spaces FIRST (tr): whisper-cli's translate output leads
   # with a newline and puts each segment on its own line - left in, that leading
@@ -369,6 +369,10 @@ overlay_metrics() {
   local alp sil peak
   read -r alp sil peak < "$STT_METRICS" 2>/dev/null || true
   if [[ -z "${alp:-}" && -z "${sil:-}" ]]; then : > "$METRICS_FILE"; return 0; fi
+  # "none" is the no-confidence sentinel (translate path, or no jq). It must be a
+  # real field: an empty one would shift silence and peak left into the wrong
+  # variables, and exp() of a percentage renders a nonsense confidence.
+  [[ "$alp" == none ]] && alp=""
   # conf from avg_logprob (exp -> %); silence is already a percent. conf=-1 means
   # no confidence available (jq-less path) - the overlay then shows silence only.
   # pflag grades the peak into three zones: "loud" at/above PEAK_LOUD_DB (red),
@@ -432,6 +436,10 @@ record_start() {
   if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
     log "already recording, ignoring"; return 0
   fi
+  # A pidfile with no live process behind it means the last recorder stopped on
+  # its own - it hit the MAX_REC_S cap, or was killed. Clear it, or the renderer
+  # would keep showing a dictation that ended.
+  [[ -f "$pidfile" ]] && { log "clearing stale recorder pidfile"; rm -f "$pidfile"; }
   : > "$raw"
   # stdout (piped to file) flushes continuously; a direct file output would stay
   # buffered and the live pump would see an empty file.
@@ -447,7 +455,14 @@ record_stop() {
   [[ -f "$pidfile" ]] || { log "no active recording"; return 1; }
   local pid; pid="$(cat "$pidfile" 2>/dev/null || true)"; rm -f "$pidfile"
   [[ -n "$pid" ]] || return 1
-  kill -INT "$pid" 2>/dev/null || true   # SIGINT: graceful flush of the last audio
+  # Only ever signal our own recorder. A pidfile can outlive its process (the
+  # MAX_REC_S cap, a kill -9, a crash), and by then the number may belong to
+  # something else entirely.
+  if [[ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" != "${FFMPEG##*/}" ]]; then
+    log "recorder $pid already gone"
+  else
+    kill -INT "$pid" 2>/dev/null || true   # SIGINT: graceful flush of the last audio
+  fi
   # Wait for ffmpeg to actually exit so the raw buffer is complete (no clipped
   # last word). This is bounded and typically ~90ms.
   for _ in $(seq 1 200); do kill -0 "$pid" 2>/dev/null || break; sleep 0.01; done
@@ -482,13 +497,13 @@ playback() {
     -af "volume=${MEMO_GAIN},alimiter=limit=0.97" "$WAV" 2>/dev/null \
     || wrap_wav "$RAW" "$WAV" || return 0
   notify "▶ playing"
-  "$PLAYER" "$WAV" 2>>"$STATE_DIR/log" || $PLAYER_FALLBACK "$WAV" 2>>"$STATE_DIR/log" || true
+  "$PLAYER" "$WAV" 2>>"$STATE_DIR/log" || log "playback failed - is a PulseAudio server running?"
 }
 
 dictate_recording() { [[ -f "$DICTATE_PID" ]] && kill -0 "$(cat "$DICTATE_PID" 2>/dev/null)" 2>/dev/null; }
 
 begin_dictation() {
-  rm -f "$SUBMIT_REQ" "$CANCEL_REQ" "$TRANSLATE_REQ" "$MEMO_PRESSTIME"
+  rm -f "$SUBMIT_REQ" "$CANCEL_REQ" "$TRANSLATE_REQ" "$MEMO_PRESSTIME" "$PENDING"
   : > "$DIAG"   # fresh trace per dictation; talkey-diag shows the latest
   diag "==== dictate start raw=$RAW interval=${STREAM_INTERVAL}s stream_prompt=${#STREAM_PROMPT}c ===="
   now_ms > "$PRESSTIME"
@@ -633,20 +648,13 @@ case "$MODE/$ACTION" in
     else
       log "submit -> Enter"; play_sound submit; capture_target; send_return
     fi ;;
-  # Toggle the key cheat-sheet overlay: open if closed, close if open.
+  # Toggle the key cheat sheet. Like everything else here this only flips a
+  # state file; the renderer watches it and draws the window. talkey knows
+  # nothing about eww, and needs no terminal emulator of its own.
   help/*)
-    command -v "$HELP_TERM" >/dev/null 2>&1 || exit 0
-    HELP_PID="$STATE_DIR/help.pid"
-    if [[ -f "$HELP_PID" ]] && kill -0 "$(cat "$HELP_PID" 2>/dev/null)" 2>/dev/null; then
-      kill "$(cat "$HELP_PID" 2>/dev/null)" 2>/dev/null; rm -f "$HELP_PID"; log "help closed"
-    else
-      "$HELP_TERM" --class "$HELP_CLASS,$HELP_CLASS" -T "$HELP_CLASS" \
-        -o "window.dimensions.columns=$HELP_COLS" -o "window.dimensions.lines=$HELP_LINES" \
-        -o "window.padding.x=$HELP_PAD" -o "window.padding.y=$HELP_PAD" \
-        -e "$SCRIPT_DIR/talkey-help" >/dev/null 2>&1 &
-      echo $! > "$HELP_PID"; log "help opened"
-    fi
-    ;;
+    if [[ -f "$HELP_ON" ]]; then rm -f "$HELP_ON"; log "help closed"
+    else : > "$HELP_ON"; log "help opened"
+    fi ;;
 
   *) echo "usage: talkey dictate|memo press|release|start|stop | talkey submit | talkey help" >&2; exit 2 ;;
 esac

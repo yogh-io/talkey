@@ -29,8 +29,18 @@ if [[ "${WHISPER_CUDA:-0}" == "1" ]]; then
   echo ">> configuring with CUDA"
   export PATH="/opt/cuda/bin:$PATH"
   export CUDACXX="${CUDACXX:-/opt/cuda/bin/nvcc}"
-  # 86 = RTX 30-series (Ampere, e.g. 3070 Ti). Override via WHISPER_CUDA_ARCH.
-  cmake_flags+=(-DGGML_CUDA=1 -DCMAKE_CUDA_ARCHITECTURES="${WHISPER_CUDA_ARCH:-86}")
+  # Ask the card what it is. A wrong architecture builds kernels that will not
+  # run on the installed GPU, and hardcoding one only ever suits its author.
+  # nvidia-smi reports e.g. "8.6" -> 86; if it cannot be reached, "native" lets
+  # CMake (3.24+) detect it at configure time.
+  arch="${WHISPER_CUDA_ARCH:-}"
+  if [[ -z "$arch" ]]; then
+    arch="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
+            | head -1 | tr -d '. ' )"
+    [[ "$arch" =~ ^[0-9]+$ ]] || arch=native
+  fi
+  echo ">> CUDA architecture: $arch"
+  cmake_flags+=(-DGGML_CUDA=1 -DCMAKE_CUDA_ARCHITECTURES="$arch")
 fi
 
 echo ">> configuring"

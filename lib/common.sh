@@ -35,16 +35,21 @@ DATA_DIR="$TALKEY_DATA_DIR"
 TALKEY_CONFIG="${TALKEY_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/talkey/talkey.env}"
 if [[ -f "$TALKEY_CONFIG" ]]; then
   while IFS= read -r _line; do
-    _line="${_line%%#*}"                       # strip comments
     [[ "$_line" == *=* ]] || continue
     _key="${_line%%=*}"; _val="${_line#*=}"
     _key="${_key//[[:space:]]/}"
     [[ "$_key" =~ ^TALKEY_[A-Z0-9_]+$ ]] || continue
     [[ -n "${!_key+isset}" ]] && continue      # the environment wins
     _val="${_val#"${_val%%[![:space:]]*}"}"    # trim leading space
-    _val="${_val%"${_val##*[![:space:]]}"}"    # trim trailing space
-    [[ "$_val" == \"*\" && ${#_val} -ge 2 ]] && _val="${_val:1:${#_val}-2}"
-    [[ "$_val" == \'*\' && ${#_val} -ge 2 ]] && _val="${_val:1:${#_val}-2}"
+    # Quoted value: take it verbatim up to the closing quote, so a '#' inside it
+    # survives. Unquoted: everything up to the first '#' is the value. Stripping
+    # comments before this would silently truncate a label like "# 1 key".
+    case "$_val" in
+      \"*) _val="${_val#\"}"; _val="${_val%%\"*}" ;;
+      \'*) _val="${_val#\'}"; _val="${_val%%\'*}" ;;
+      *)   _val="${_val%%#*}"
+           _val="${_val%"${_val##*[![:space:]]}"}" ;;   # trim trailing space
+    esac
     export "$_key=$_val"
   done < "$TALKEY_CONFIG"
   unset _line _key _val
@@ -53,4 +58,19 @@ unset _d
 
 # --- 3. runtime state ------------------------------------------------------
 # One directory holds every state file the recorder writes and the HUD reads.
-STATE_DIR="${TALKEY_STATE_DIR:-${XDG_RUNTIME_DIR:-/tmp}/talkey}"
+# This directory holds raw microphone audio, live transcripts, the log, and the
+# id of the window text gets typed into. XDG_RUNTIME_DIR is already private and
+# per-user; /tmp is neither, so a fallback there is created 0700 with the uid in
+# the name, and refused outright if someone else owns it.
+if [[ -n "${TALKEY_STATE_DIR:-}" ]]; then
+  STATE_DIR="$TALKEY_STATE_DIR"
+elif [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+  STATE_DIR="$XDG_RUNTIME_DIR/talkey"
+else
+  STATE_DIR="/tmp/talkey-$(id -u)"
+fi
+mkdir -p -m 700 "$STATE_DIR" 2>/dev/null || true
+if [[ -d "$STATE_DIR" && ! -O "$STATE_DIR" ]]; then
+  echo "talkey: $STATE_DIR is not owned by you - refusing to use it" >&2
+  return 1 2>/dev/null || exit 1
+fi

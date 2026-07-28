@@ -12,22 +12,21 @@ UNIT_DIR="$HOME/.config/systemd/user"
 MODEL_NAME="${TALKEY_MODEL_NAME:-large-v3-turbo}"
 
 echo ">> checking runtime deps"
-for c in ffmpeg paplay xdotool curl python3; do
+for c in ffmpeg paplay xdotool xset curl python3; do
   command -v "$c" >/dev/null 2>&1 || { echo "MISSING: $c"; exit 1; }
 done
 for c in eww inotifywait; do
   command -v "$c" >/dev/null 2>&1 || echo "note: '$c' missing - live HUD disabled (set TALKEY_STREAM=0, or install it)"
 done
-command -v alacritty >/dev/null 2>&1 || echo "note: 'alacritty' missing - the help overlay (talkey help) won't open"
 
 # whisper: a distro package, or built into ~/.local by setup/build-whisper.sh.
 have_server=0
-for c in /usr/bin/whisper-server "$HOME/.local/opt/whisper.cpp/build/bin/whisper-server"; do
+for c in "$HOME/.local/opt/whisper.cpp/build/bin/whisper-server" /usr/bin/whisper-server; do
   [[ -x "$c" ]] && { have_server=1; break; }
 done
 have_model=0
-for c in "/usr/share/whisper.cpp-model-$MODEL_NAME/ggml-$MODEL_NAME.bin" \
-         "$HOME/.local/share/whisper/ggml-$MODEL_NAME.bin"; do
+for c in "$HOME/.local/share/whisper/ggml-$MODEL_NAME.bin" \
+         "/usr/share/whisper.cpp-model-$MODEL_NAME/ggml-$MODEL_NAME.bin"; do
   [[ -f "$c" ]] && { have_model=1; break; }
 done
 if (( ! have_server || ! have_model )); then
@@ -37,8 +36,13 @@ fi
 
 echo ">> installing systemd --user service"
 mkdir -p "$UNIT_DIR"
-sed "s|@BINDIR@|$REPO_DIR/bin|g" \
-  "$REPO_DIR/systemd/talkey-whisper.service.in" > "$UNIT_DIR/talkey-whisper.service"
+# The checkout's bin dir goes into the unit. Note this copy in ~/.config
+# permanently overrides a packaged unit in /usr/lib - see the uninstall note at
+# the end if you later install the package.
+for u in talkey-whisper talkey-hud talkey-norepeat; do
+  sed "s|@BINDIR@|${REPO_DIR//|/\\|}/bin|g" \
+    "$REPO_DIR/systemd/$u.service.in" > "$UNIT_DIR/$u.service"
+done
 systemctl --user daemon-reload
 systemctl --user enable --now talkey-whisper.service
 
@@ -54,13 +58,21 @@ cat <<EOF
 Next: bind your keys.
   1) run:  xev | grep --line-buffered -oP 'keycode\s+\d+.*'
      press each key (xev window focused), note the number after "keycode".
-  2) copy the bindings and set your keycodes at the top of the copy:
-       cp $REPO_DIR/i3/talkey.conf ~/.config/i3/talkey.conf
-  3) add to ~/.config/i3/config:
-       include ~/.config/i3/talkey.conf
-  4) reload i3 (Mod+Shift+R). Hold your dictate key, speak, release.
+  2) copy the bindings for whatever you use and set your keys in the copy:
+       i3        cp $REPO_DIR/bindings/i3.conf ~/.config/i3/talkey.conf
+       sxhkd     cp $REPO_DIR/bindings/sxhkdrc ~/.config/sxhkd/sxhkdrc
+       xbindkeys cp $REPO_DIR/bindings/xbindkeysrc ~/.xbindkeysrc
+  3) load them (i3: add `include ~/.config/i3/talkey.conf` and reload with
+     Mod+Shift+R; sxhkd: pkill -USR1 -x sxhkd; xbindkeys: killall -HUP xbindkeys)
+  4) hold your dictate key, speak, release.
 
-Note: running from a checkout, put $REPO_DIR/bin on your PATH so the i3
-bindings resolve, or replace the bare 'talkey' commands in the copy with
-absolute paths.
+Put $REPO_DIR/bin on your PATH so the bare 'talkey' commands resolve.
+
+Not using i3? Start the helpers as services instead of from your WM:
+  systemctl --user enable --now talkey-hud talkey-norepeat
+and set TALKEY_NOREPEAT_KEYCODES in ~/.config/talkey/talkey.env.
+
+To undo this checkout install later (it shadows a packaged one):
+  systemctl --user disable --now talkey-whisper talkey-hud talkey-norepeat
+  rm ~/.config/systemd/user/talkey-{whisper,hud,norepeat}.service
 EOF

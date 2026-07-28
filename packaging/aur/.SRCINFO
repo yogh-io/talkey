@@ -16,12 +16,14 @@ pkgbase = talkey
 	depends = python
 	optdepends = whisper.cpp-model-large-v3-turbo: the default speech model (AUR) - talkey needs some model
 	optdepends = whisper.cpp-model-small: translate-to-English support (AUR)
-	optdepends = eww: live dictation HUD
-	optdepends = inotify-tools: live dictation HUD
-	optdepends = jq: HUD feed and faster hook parsing
-	optdepends = alacritty: the "talkey help" cheat-sheet overlay
+	optdepends = eww: the live dictation HUD and the key cheat sheet
+	optdepends = inotify-tools: the live dictation HUD
+	optdepends = jq: the confidence readout, and titles for archived recordings
+	optdepends = libnotify: desktop notifications - the only feedback when the HUD is not installed
 	optdepends = ollama: auto-titled recordings in the archive
 	optdepends = xclip: paste mode (TALKEY_PASTE=1) instead of typing
+	optdepends = sxhkd: key bindings without i3
+	optdepends = xbindkeys: key bindings without i3
 	source = talkey-0.1.0.tar.gz::https://github.com/yogh-io/talkey/archive/refs/tags/v0.1.0.tar.gz
 	sha256sums = SKIP
 

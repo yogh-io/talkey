@@ -1,0 +1,21 @@
+[Unit]
+Description=talkey dictation HUD (eww renderer)
+Documentation=https://github.com/yogh-io/talkey
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# An alternative to letting your window manager start it (i3's exec_always, or
+# an autostart entry). Either way is fine - the watcher is single-instance, so
+# running both is harmless.
+#
+# It needs DISPLAY. A graphical session started through systemd usually imports
+# it; if yours does not, add DISPLAY here or in the environment file.
+EnvironmentFile=-%h/.config/talkey/talkey.env
+ExecStart=@BINDIR@/talkey-hud
+ExecStop=@BINDIR@/talkey-hud stop
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

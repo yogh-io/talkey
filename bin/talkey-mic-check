@@ -4,9 +4,12 @@
 # The overlay flags a single clip's level live (red meter) and after the fact
 # (the peak reading). This is the corpus view: run it over everything in the
 # archive to see whether the mic is set up right OVERALL - is it clipping a lot,
-# sitting too faint, or all over the place. It reads the SAME thresholds talkey uses
-# (TALKEY_PEAK_CLIP_DB / TALKEY_PEAK_FAINT_DB) so the batch verdict and the live one
-# never disagree.
+# sitting too faint, or all over the place.
+#
+# These are deliberately NOT the live meter's thresholds. The meter grades one
+# clip as you speak (TALKEY_PEAK_LOUD_DB / _LOW_DB, the green band); this grades
+# a whole corpus, where what matters is how often you actually hit the ceiling
+# or the floor - so it uses the tighter TALKEY_PEAK_CLIP_DB / _FAINT_DB.
 #
 #   talkey-mic-check              # summary over the default archive dir
 #   talkey-mic-check DIR          # over another dir
@@ -31,8 +34,8 @@ for a in "$@"; do
   esac
 done
 DIR="${DIR:-${TALKEY_ARCHIVE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/talkey/recordings}}"
-CLIP_DB="${TALKEY_PEAK_CLIP_DB:--1}"     # peak at/above this = clipping (matches talkey)
-FAINT_DB="${TALKEY_PEAK_FAINT_DB:--18}"  # peak never above this = too faint (matches talkey)
+CLIP_DB="${TALKEY_PEAK_CLIP_DB:--1}"     # peak at/above this = clipping outright
+FAINT_DB="${TALKEY_PEAK_FAINT_DB:--18}"  # peak never above this = too faint to trust
 
 command -v ffmpeg >/dev/null 2>&1 || { echo "ffmpeg required"; exit 1; }
 [[ -d "$DIR" ]] || { echo "no such dir: $DIR"; exit 1; }

@@ -26,6 +26,7 @@ confidence, how much of the clip was silence, and your microphone's peak level.
 - [How it works](#how-it-works)
 - [Microphone level](#microphone-level)
 - [Vocabulary](#vocabulary)
+- [Privacy: what is stored, and where](#privacy-what-is-stored-and-where)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [Licence](#licence)
@@ -124,18 +125,25 @@ not otherwise use, within reach of a resting hand.
 
 | | |
 |---|---|
-| Required | `bash` 4+, `whisper-cpp`, `ffmpeg`, `xdotool`, `xset`, `libpulse` (`paplay`), `curl`, `python3` |
+| Required | X11, `bash` 4+, `whisper-cpp`, `ffmpeg`, `xdotool`, `xset`, `curl`, `python3` |
+| Sound | a PulseAudio-compatible server: PulseAudio itself, or PipeWire with `pipewire-pulse`. Recording is `ffmpeg -f pulse`, playback is `paplay`. |
 | A speech model | `whisper.cpp-model-large-v3-turbo` (default), or any ggml model |
-| Live HUD | `eww`, `inotify-tools`, `jq` |
+| Live HUD and cheat sheet | `eww`, `inotify-tools`, `jq` |
 | Translate key | `whisper.cpp-model-small` - turbo dropped whisper's translate task |
-| Help overlay | `alacritty`, or set `TALKEY_HELP_TERM` |
+| Key bindings | your window manager, or `sxhkd` / `xbindkeys` |
+| Notifications | `libnotify` - the only feedback if you skip the HUD |
 | Paste mode | `xclip` |
-| Auto-titled recordings | `ollama` |
+| Auto-titled recordings | `ollama`, `jq` |
 
 A GPU is not required, but `large-v3-turbo` really wants one. On CPU, use
 `small.en` instead. With the CUDA toolkit installed, rebuild with
 `WHISPER_CUDA=1 setup/build-whisper.sh` and restart the service - transcription
-then comes back in well under a second.
+then comes back in well under a second. The build asks your card which
+architecture to target, so there is nothing to configure.
+
+A build in `~/.local` always wins over the distro package, so a GPU rebuild is
+never quietly undone by the CPU-only build the package depends on.
+`talkey-whisper` logs which binary and model it chose.
 
 ## Configuration
 
@@ -256,6 +264,32 @@ The prompt is applied only to dictations shorter than `TALKEY_VOCAB_MAX_S`
 subtly alter a word - a "not" was dropped from a 43 second clip, reversing the
 meaning - so long-form dictation is left raw.
 
+## Privacy: what is stored, and where
+
+Nothing leaves your machine. The only network calls are to `127.0.0.1` - the
+whisper server, and Ollama if you turn on titling. There is no telemetry and no
+account.
+
+Local storage is a different question, and worth knowing about:
+
+| What | Where | Turn it off with |
+|---|---|---|
+| A `.wav` of every dictation and memo | `~/.local/share/talkey/recordings` | `TALKEY_ARCHIVE=0` |
+| Transcript keywords in those filenames | same, when titling is on | `TALKEY_ARCHIVE_TITLE=0` |
+| Live transcripts, raw audio, the log | `$XDG_RUNTIME_DIR/talkey` | cleared when you log out |
+
+The archive is on by default and never pruned - it is what makes
+`talkey-mic-check` and `talkey-replay` useful, but it does accumulate every word
+you have dictated. To wipe it:
+
+```bash
+rm -rf ~/.local/share/talkey/recordings
+```
+
+The runtime directory holds raw microphone audio and the id of the window text
+is typed into, so it is created private to you (`0700`), and talkey refuses to
+start if it finds one owned by somebody else.
+
 ## Troubleshooting
 
 ```bash
@@ -264,6 +298,8 @@ systemctl --user status talkey-whisper          # the speech-to-text server
 journalctl --user -u talkey-whisper -f          # its logs
 talkey-diag                                     # the last dictation's live-path trace
 talkey-mic-check --worst                        # microphone sweep of the archive
+talkey-replay <recording.wav>                   # replay an archived clip through the
+                                                # live pump, to see what it did
 ```
 
 **Nothing happens when I press the key.** Check the binding fired:

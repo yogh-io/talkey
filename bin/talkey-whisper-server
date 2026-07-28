@@ -17,11 +17,22 @@ done
 MODEL_NAME="${TALKEY_MODEL_NAME:-large-v3-turbo}"
 HOST="${TALKEY_WHISPER_HOST:-127.0.0.1}"
 PORT="${TALKEY_WHISPER_PORT:-8910}"
-THREADS="${TALKEY_WHISPER_THREADS:-6}"
+# Derived, not configured: half the cores, capped at 8. whisper gains little
+# past that, and leaving headroom keeps the desktop responsive while it decodes.
+if [[ -z "${TALKEY_WHISPER_THREADS:-}" ]]; then
+  _cores="$(nproc 2>/dev/null || echo 4)"
+  THREADS=$(( _cores / 2 )); (( THREADS < 1 )) && THREADS=1; (( THREADS > 8 )) && THREADS=8
+else
+  THREADS="$TALKEY_WHISPER_THREADS"
+fi
 
+# Probe order matters: a build in ~/.local wins over the distro package. The
+# AUR package depends on whisper-cpp, so /usr/bin/whisper-server exists on every
+# packaged install - and it is CPU-only. Preferring it would silently undo the
+# GPU rebuild the README recommends.
 BIN="${TALKEY_WHISPER_SERVER:-}"
 if [[ -z "$BIN" ]]; then
-  for c in /usr/bin/whisper-server "$HOME/.local/opt/whisper.cpp/build/bin/whisper-server"; do
+  for c in "$HOME/.local/opt/whisper.cpp/build/bin/whisper-server" /usr/bin/whisper-server; do
     if [[ -x "$c" ]]; then BIN="$c"; break; fi
   done
 fi
@@ -32,8 +43,8 @@ fi
 
 MODEL="${TALKEY_MODEL:-}"
 if [[ -z "$MODEL" ]]; then
-  for c in "/usr/share/whisper.cpp-model-$MODEL_NAME/ggml-$MODEL_NAME.bin" \
-           "$HOME/.local/share/whisper/ggml-$MODEL_NAME.bin"; do
+  for c in "$HOME/.local/share/whisper/ggml-$MODEL_NAME.bin" \
+           "/usr/share/whisper.cpp-model-$MODEL_NAME/ggml-$MODEL_NAME.bin"; do
     if [[ -f "$c" ]]; then MODEL="$c"; break; fi
   done
 fi
@@ -42,4 +53,7 @@ fi
   exit 1
 }
 
+# Say what was picked. "why is it slow" is nearly always the CPU build being
+# used when a GPU build exists, and this is the one place that knows.
+echo "talkey: whisper-server=$BIN model=$MODEL threads=$THREADS" >&2
 exec "$BIN" --model "$MODEL" --host "$HOST" --port "$PORT" --threads "$THREADS" --no-timestamps

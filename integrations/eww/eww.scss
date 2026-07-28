@@ -21,8 +21,10 @@ $silence:  #5b6570;
 $live:     #3fc7d6;   // listening
 $work:     #e0a92b;   // transcribing
 
-$mono: "UbuntuMono Nerd Font Mono", monospace;
-$sans: "Cantarell", "Noto Sans", sans-serif;
+// Font stacks, not font requirements: each ends in a generic family, so this
+// renders correctly on a machine with none of the named faces installed.
+$mono: "UbuntuMono Nerd Font Mono", "Ubuntu Mono", "DejaVu Sans Mono", monospace;
+$sans: "Cantarell", "Noto Sans", "DejaVu Sans", sans-serif;
 
 // --- panel ------------------------------------------------------------------
 .hud {
@@ -87,3 +89,45 @@ $sans: "Cantarell", "Noto Sans", sans-serif;
 .foot-send    { color: $good;  }
 .foot-cancel  { color: $loud;  }
 .foot-restart { color: $quiet; }
+
+// --- key cheat sheet --------------------------------------------------------
+// Same panel language as the HUD, so the two read as one tool. Toggled by
+// `talkey help`; drawn here rather than in a terminal, so talkey needs no
+// terminal emulator at all.
+.help {
+  min-width: 640px;
+  padding: 18px 22px 16px 20px;
+  border-radius: 16px;
+  border: 1px solid $hairline;
+  border-left: 3px solid $live;
+  background-image: linear-gradient(to bottom, $panel-top, $panel-bot);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+  color: $ink;
+}
+.help-title {
+  font-family: $mono;
+  font-size: 15px;
+  color: $live;
+  margin-bottom: 14px;
+}
+.help-row { margin-bottom: 8px; }
+.help-key {
+  font-family: $mono;
+  font-size: 14px;
+  min-width: 130px;
+  margin-right: 14px;
+}
+.key-dictate { color: $live;  }
+.key-submit  { color: $good;  }
+.key-memo    { color: $loud;  }
+.help-what {
+  font-family: $sans;
+  font-size: 15px;
+  color: $ink;
+}
+.help-note {
+  font-family: $sans;
+  font-size: 13px;
+  color: $ink-dim;
+  margin-top: 12px;
+}

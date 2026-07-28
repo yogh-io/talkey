@@ -1,0 +1,47 @@
+# talkey bindings for xbindkeys - works under any X11 window manager.
+#
+#   cp /usr/share/talkey/bindings/xbindkeysrc ~/.xbindkeysrc   (or append)
+#   xbindkeys                                                  (if not already running)
+#   killall -HUP xbindkeys                                     (reload)
+#
+# xbindkeys binds key release with "Release + ...", which is what makes
+# hold-to-talk work: press starts recording, release transcribes and types.
+#
+# These use raw keycodes ("c:194"), so they work for keys that emit no keysym.
+# Find yours with:
+#   xev | grep --line-buffered -oP 'keycode\s+\d+.*'
+# The numbers below are a Keychron K10's media keys; yours will differ.
+#
+# xbindkeys is only a hotkey daemon: it does not start the background helpers,
+# and it cannot float or unfocus the HUD. Use the user services for the first:
+#   systemctl --user enable --now talkey-hud talkey-norepeat
+# and set TALKEY_NOREPEAT_KEYCODES in ~/.config/talkey/talkey.env.
+
+# --- dictate: hold to talk, release to type (tap = hands-free toggle) ---
+"talkey dictate press"
+  c:194
+
+"talkey dictate release"
+  Release + c:194
+
+# --- dictate in a second language ---
+"env TALKEY_LANG=nl talkey dictate press"
+  c:191
+
+"env TALKEY_LANG=nl talkey dictate release"
+  Release + c:191
+
+# --- memo, translate toggle, double-tap to restart ---
+"talkey memo press"
+  c:193
+
+"talkey memo release"
+  Release + c:193
+
+# --- submit: Enter, or cycle the pending action mid-dictation ---
+"talkey submit"
+  c:192
+
+# --- the key cheat sheet ---
+"talkey help"
+  Mod4 + c

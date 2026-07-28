@@ -22,6 +22,7 @@ done
 CFG="$DATA_DIR/integrations/eww"
 [[ -f "$CFG/eww.yuck" ]] || { echo "talkey-hud: no eww config at $CFG - set TALKEY_DATA_DIR" >&2; exit 1; }
 PIDFILE="$STATE_DIR/dictate.pid"
+HELP_ON="$STATE_DIR/help.on"             # `talkey help` toggles this; we draw the sheet
 EWW="${TALKEY_EWW:-eww}"
 LINGER="${TALKEY_EWW_LINGER:-2.5}"       # seconds the HUD stays after recording ends
 
@@ -55,7 +56,19 @@ ew()   { "$EWW" -c "$CFG" "$@" >/dev/null 2>&1 9>&- || true; }
 open_hud()  { ew open talkeyhud ${open_args[@]+"${open_args[@]}"}; }
 close_hud() { ew close talkeyhud; }
 
-if [[ "${1:-}" == stop ]]; then close_hud; ew kill; exit 0; fi
+# The cheat sheet. The labels name the keys printed on YOUR keyboard - talkey
+# binds nothing by them, they are only what the sheet says. Pushed into eww as
+# one JSON value so the widget stays a dumb renderer.
+help_json() {
+  printf '{"dictate":"%s","dictate2":"%s","submit":"%s","memo":"%s","lang":"%s","lang2":"%s"}' \
+    "${TALKEY_LABEL_DICTATE:-●}" "${TALKEY_LABEL_DICTATE2:-Tools}" \
+    "${TALKEY_LABEL_SUBMIT:-⏎ Triangle}" "${TALKEY_LABEL_MEMO:-■ Square}" \
+    "${TALKEY_LABEL_LANG:-English}" "${TALKEY_LABEL_LANG2:-Dutch}"
+}
+open_help()  { ew update "help=$(help_json)"; ew open talkeyhelp ${open_args[@]+"${open_args[@]}"}; }
+close_help() { ew close talkeyhelp; }
+
+if [[ "${1:-}" == stop ]]; then close_hud; close_help; ew kill; exit 0; fi
 
 command -v inotifywait >/dev/null 2>&1 || { echo "need inotify-tools"; exit 1; }
 mkdir -p "$STATE_DIR"
@@ -72,6 +85,7 @@ fi
 # it can't resolve eww-feed). Kill is a no-op if none is running.
 ew kill; sleep 0.3; ew daemon; sleep 0.4
 [[ -f "$PIDFILE" ]] && open_hud
+[[ -f "$HELP_ON" ]] && open_help
 
 # Monitor the state dir; react only to the recorder pidfile. Create/appear -> show
 # now; delete/vanish -> show for a linger then close (unless a new dictation began).
@@ -85,10 +99,14 @@ WATCH_PID=$!
 trap 'kill "$WATCH_PID" 2>/dev/null' EXIT INT TERM
 
 while read -r _ev fname <&8; do
-  [[ "$fname" == "dictate.pid" ]] || continue
-  if [[ -f "$PIDFILE" ]]; then
-    open_hud
-  else
-    ( sleep "$LINGER"; [[ -f "$PIDFILE" ]] || close_hud ) &
-  fi
+  case "$fname" in
+    dictate.pid)
+      if [[ -f "$PIDFILE" ]]; then
+        open_hud
+      else
+        ( sleep "$LINGER"; [[ -f "$PIDFILE" ]] || close_hud ) &
+      fi ;;
+    help.on)
+      if [[ -f "$HELP_ON" ]]; then open_help; else close_help; fi ;;
+  esac
 done

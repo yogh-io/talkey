@@ -1,10 +1,9 @@
-;; The voice dictation HUD (eww/GTK). Reads the live state via eww-feed (the same
-;; files bin/talkey writes) and renders it; nothing here feeds back into the recorder,
-;; it is display only. This is the talkey renderer (it replaced the earlier
-;; alacritty overlay).
+;; The talkey renderer (eww/GTK). Two windows: the dictation HUD, and the key
+;; cheat sheet. Both are display only - they read state that bin/talkey writes
+;; and never feed anything back into the recorder.
 ;;
 ;; Launch via integrations/eww/talkey-hud - it exports TALKEY_EWW_DIR (used by the
-;; deflisten below) and opens/closes this window per dictation. A bare
+;; deflisten below) and opens/closes these windows. A bare
 ;; `eww -c integrations/eww open talkeyhud` needs TALKEY_EWW_DIR exported first.
 
 ;; One JSON line per tick -> the `hud` variable. eww runs the command through a
@@ -16,8 +15,8 @@
   "$TALKEY_EWW_DIR/eww-feed")
 
 ;; Studio-console layout. Header (state + elapsed), transcript hero, the level in
-;; an inset meter well, the final reading, and the hotkey-hint footer. Feature
-;; parity with the alacritty overlay; the styling lives in eww.scss.
+;; an inset meter well, the final reading, and the hotkey-hint footer. The
+;; styling lives in eww.scss.
 (defwidget talkeyhud []
   (box :class "hud zone-${hud.zone}" :orientation "vertical" :space-evenly false :spacing 0 :hexpand true :halign "fill"
     ;; header row: ● state ................... elapsed
@@ -62,3 +61,37 @@
   :focusable false
   :windowtype "notification"
   (talkeyhud))
+
+;; --- key cheat sheet -------------------------------------------------------
+;; Toggled by `talkey help`, which only flips a state file; talkey-hud fills in
+;; the labels below and opens this window. The labels are yours to set (they name
+;; the keys printed on your keyboard) - see TALKEY_LABEL_* in talkey.env.
+;; Rendered here rather than in a terminal so talkey needs no terminal emulator
+;; at all: eww is already drawing the HUD.
+(defvar help '{"dictate":"●","dictate2":"Tools","submit":"⏎ Triangle","memo":"■ Square","lang":"English","lang2":"Dutch"}')
+
+(defwidget talkeyhelp []
+  (box :class "help" :orientation "vertical" :space-evenly false :hexpand true :halign "fill"
+    (label :class "help-title" :halign "start" :text "talkey - keys")
+    (box :class "help-row" :orientation "horizontal" :space-evenly false
+      (label :class "help-key key-dictate" :halign "start" :text {help.dictate})
+      (label :class "help-what" :halign "start" :text "dictate (${help.lang})"))
+    (box :class "help-row" :orientation "horizontal" :space-evenly false
+      (label :class "help-key key-dictate" :halign "start" :text {help.dictate2})
+      (label :class "help-what" :halign "start" :text "dictate (${help.lang2})"))
+    (box :class "help-row" :orientation "horizontal" :space-evenly false
+      (label :class "help-key key-submit" :halign "start" :text {help.submit})
+      (label :class "help-what" :halign "start" :text "send after the dictation finishes"))
+    (box :class "help-row" :orientation "horizontal" :space-evenly false
+      (label :class "help-key key-memo" :halign "start" :text {help.memo})
+      (label :class "help-what" :halign "start" :text "tap = translate  ·  double-tap = restart  ·  else memo"))
+    (label :class "help-note" :halign "start" :xalign 0
+           :text "hold a dictate key to talk while held, or tap it for hands-free (tap again to stop).
+mid-dictation, tap ${help.submit} to send when it finishes, or double-tap ${help.memo} to record the take again.")))
+
+(defwindow talkeyhelp
+  :geometry (geometry :x "0px" :y "300px" :anchor "top center" :width "680px")
+  :stacking "fg"
+  :focusable false
+  :windowtype "notification"
+  (talkeyhelp))
