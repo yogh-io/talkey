@@ -1,0 +1,4 @@
+recordings/
+*.bak
+*.bak.*
+__pycache__/

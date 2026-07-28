@@ -1,0 +1,28 @@
+pkgbase = talkey
+	pkgdesc = Push-to-talk voice input for X11/i3 - hold a key, speak, the text is typed. Offline, no API key.
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/yogh-io/talkey
+	install = talkey.install
+	arch = any
+	license = MIT
+	depends = bash
+	depends = whisper-cpp
+	depends = ffmpeg
+	depends = xdotool
+	depends = xorg-xset
+	depends = libpulse
+	depends = curl
+	depends = python
+	optdepends = whisper.cpp-model-large-v3-turbo: the default speech model (AUR) - talkey needs some model
+	optdepends = whisper.cpp-model-small: translate-to-English support (AUR)
+	optdepends = eww: live dictation HUD
+	optdepends = inotify-tools: live dictation HUD
+	optdepends = jq: HUD feed and faster hook parsing
+	optdepends = alacritty: the "talkey help" cheat-sheet overlay
+	optdepends = ollama: auto-titled recordings in the archive
+	optdepends = xclip: paste mode (TALKEY_PASTE=1) instead of typing
+	source = talkey-0.1.0.tar.gz::https://github.com/yogh-io/talkey/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = talkey

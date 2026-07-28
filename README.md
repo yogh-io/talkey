@@ -1,0 +1,306 @@
+# talkey
+
+Hold a key, speak, release. The text is typed into whatever window has focus.
+
+Everything runs on your machine - whisper.cpp does the transcription, nothing is
+uploaded, there is no API key and no account. For X11 with i3, or any window
+manager that can bind a key's press *and* release.
+
+![the HUD while you are talking](docs/screenshots/hud-listening.png)
+
+A floating heads-up display shows the transcript forming as you speak, with a
+live level meter. It never takes focus, so your text still lands in the window
+you were working in.
+
+![the HUD when the dictation lands](docs/screenshots/hud-done.png)
+
+On release the clean final text is typed, and the reading tells you how it went:
+confidence, how much of the clip was silence, and your microphone's peak level.
+
+## Contents
+
+- [Why](#why)
+- [What the keys do](#what-the-keys-do)
+- [Install](#install)
+- [Configuration](#configuration)
+- [How it works](#how-it-works)
+- [Microphone level](#microphone-level)
+- [Vocabulary](#vocabulary)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [Licence](#licence)
+
+## Why
+
+Dictation tools tend to be cloud services, or they take over your desktop, or
+they only work inside one editor. talkey is a keybind. It types into the window
+you are already in - a terminal, a browser, an editor, a chat box - and the
+audio never leaves your machine.
+
+It is built for long technical prose: prompts, commit messages, review comments,
+issue descriptions. The things that are slow to type and easy to say.
+
+## What the keys do
+
+**Dictate** - hold to talk, release to type. Tap instead of holding and it goes
+hands-free: tap once to start, again to stop. Bind a second key for a second
+language.
+
+**Memo / translate** - on its own, hold to record and release to play the clip
+straight back, so you can hear whether that came out right. During a dictation
+the same key toggles **translate to English** for the clip: dictate in Dutch,
+tap it, and English lands in your window. whisper's translate task only ever
+outputs English, so it is *your language* → English, not the other way. Tap it
+twice quickly during a dictation and it **restarts** instead: the take so far is
+thrown away and recording begins again, without letting go of the dictate key.
+
+**Submit / cancel** - on its own, taps Enter. During a dictation each tap cycles
+what will happen when you finish: send (type, then Enter) → cancel (throw it
+away) → plain (type, no Enter) → round again. Nothing commits mid-sentence, so
+you can tap, keep talking, and undo an accidental press by tapping again. The
+HUD shows what is currently pending.
+
+**Help** - a cheat sheet of your own bindings, in a floating window.
+
+Start, stop and submit each play a short tone, so you know the state without
+looking.
+
+## Install
+
+### Arch Linux
+
+```bash
+yay -S talkey whisper.cpp-model-large-v3-turbo
+systemctl --user enable --now talkey-whisper
+```
+
+The model is a separate package because it is 1.6GB. Add
+`whisper.cpp-model-small` if you want the translate key, and `eww` for the live
+HUD - it is optional, but it is most of what makes this pleasant to use.
+
+### From a checkout
+
+```bash
+git clone https://github.com/yogh-io/talkey && cd talkey
+setup/install.sh
+```
+
+The installer checks your dependencies, builds whisper.cpp into
+`~/.local/opt/whisper.cpp` if no packaged copy exists, downloads the model to
+`~/.local/share/whisper/`, then installs and starts the speech-to-text service
+as a systemd user unit. Binaries and models live outside the repo; only scripts
+and configuration are tracked.
+
+Put `bin/` on your `PATH`, or use absolute paths in the key bindings below.
+
+### Bind your keys
+
+1. Find the keycodes. Run this, then press each key with the `xev` window
+   focused and read the number after `keycode`:
+
+   ```bash
+   xev | grep --line-buffered -oP 'keycode\s+\d+.*'
+   ```
+
+2. Copy the bindings and put your keycodes at the top of the copy:
+
+   ```bash
+   cp /usr/share/talkey/i3/talkey.conf ~/.config/i3/talkey.conf
+   ```
+
+3. Include it from `~/.config/i3/config`:
+
+   ```
+   include ~/.config/i3/talkey.conf
+   ```
+
+4. Reload i3 with `Mod+Shift+R`. Hold your dictate key, say something, release.
+
+The defaults are a Keychron K10's media keys, which is simply what this was
+written on. Any four keys work - the ones that suit this best are keys you do
+not otherwise use, within reach of a resting hand.
+
+### Requirements
+
+| | |
+|---|---|
+| Required | `bash` 4+, `whisper-cpp`, `ffmpeg`, `xdotool`, `xset`, `libpulse` (`paplay`), `curl`, `python3` |
+| A speech model | `whisper.cpp-model-large-v3-turbo` (default), or any ggml model |
+| Live HUD | `eww`, `inotify-tools`, `jq` |
+| Translate key | `whisper.cpp-model-small` - turbo dropped whisper's translate task |
+| Help overlay | `alacritty`, or set `TALKEY_HELP_TERM` |
+| Paste mode | `xclip` |
+| Auto-titled recordings | `ollama` |
+
+A GPU is not required, but `large-v3-turbo` really wants one. On CPU, use
+`small.en` instead. With the CUDA toolkit installed, rebuild with
+`WHISPER_CUDA=1 setup/build-whisper.sh` and restart the service - transcription
+then comes back in well under a second.
+
+## Configuration
+
+Everything is configurable, and every default already works. Nothing here needs
+setting to use talkey.
+
+Settings live in `~/.config/talkey/talkey.env`:
+
+```bash
+cp /usr/share/talkey/config/talkey.env.example ~/.config/talkey/talkey.env
+```
+
+The format is the same as a systemd `EnvironmentFile` - `KEY=value`, one per
+line, `#` comments. It is parsed rather than sourced, so no shell code runs from
+it. Only `TALKEY_*` names are read. Anything already set in the environment wins
+over the file, so a per-binding override still works:
+
+```
+bindcode $key_dictate_nl exec --no-startup-id env TALKEY_LANG=nl talkey dictate press
+```
+
+Key bindings themselves live in your i3 include, as variables at the top of the
+file - keycodes, mouse buttons, the help shortcut and the second language.
+
+The most useful settings:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `TALKEY_LANG` | `en` | whisper language code |
+| `TALKEY_SOURCE` | `default` | microphone; see `pactl list sources short` |
+| `TALKEY_MODEL_NAME` | `large-v3-turbo` | which model the server loads |
+| `TALKEY_HUD_MONITOR` | *(primary)* | which display the HUD opens on, e.g. `DP-1` |
+| `TALKEY_TYPE_DELAY` | `8` | milliseconds per character when typing |
+| `TALKEY_PASTE` | `0` | `1` pastes via the clipboard instead of typing - instant, but clobbers your clipboard |
+| `TALKEY_SUBMIT` | `0` | `1` presses Enter automatically after typing |
+| `TALKEY_STREAM` | `1` | `0` turns off the live HUD; transcribe only on release |
+| `TALKEY_SOUNDS` | `1` | `0` for silence |
+| `TALKEY_ARCHIVE` | `1` | keep a `.wav` of every recording |
+| `TALKEY_ARCHIVE_DIR` | `~/.local/share/talkey/recordings` | where those go |
+| `TALKEY_HOLD_MS` | `450` | longer press than this counts as hold, shorter as a tap |
+| `TALKEY_MAX_REC_S` | `120` | hard cap on one recording, so a stuck key cannot run away |
+
+See [`config/talkey.env.example`](config/talkey.env.example) for the complete
+list, including HUD geometry, meter thresholds, external tool paths and the
+labels on the help sheet.
+
+## How it works
+
+```
+hold ─┐                             ┌─ writes state files ─→ eww HUD
+      ├─ i3 bindcode ─→ talkey ─────┤
+rel ──┘                             ├─ ffmpeg -f pulse ─→ raw PCM  (record)
+                                    ├─ pump: re-transcribe every ~0.3s ─→ transcript
+                                    └─ on release: POST the clip ─→ whisper-server
+                                                     │
+                                       xdotool type (dictate) / paplay (memo)
+```
+
+`talkey MODE start|stop` is the whole runtime. `start` records raw PCM and, for
+dictation, launches the live pump and writes the display state; `stop`
+transcribes the complete clip and types it.
+
+The **pump** re-transcribes the entire buffer every few tenths of a second, so
+the HUD shows text evolving. Passing the full buffer each time is what makes it
+tolerant of pauses - whisper sees the whole sentence, not a fragment.
+
+The **server** stays resident as a systemd user unit, so the model is already
+warm in memory. Each dictation is a fast POST rather than a cold model load.
+
+The **HUD is a separate program**. talkey only writes state files; the eww
+adapter watches the recorder's pidfile with inotify and opens or closes the
+window on its own. It is event-driven throughout - nothing polls. Writing a
+different renderer means reading those same files, and talkey needs no changes.
+
+X11 **auto-repeat** is switched off for the bound keycodes, so holding a key is
+one clean press and release rather than a machine-gun of events. A small watcher
+reapplies that whenever a keyboard re-enumerates, because X quietly turns it
+back on after a reconnect or a suspend.
+
+## Microphone level
+
+Speech at a usable level is most of what whisper needs. Two failure modes recur.
+Too hot - mic close, gain high - clips the loudest samples and loses detail. Too
+faint leaves near-silence, which whisper fills with hallucinated filler: "thank
+you", "thanks for watching". Both are measured straight from the audio as the
+loudest sample in dBFS, in the same pass that measures silence.
+
+**While you talk**, the meter is a scrolling trace. Each column is a moment: its
+height is loudness, its colour the zone - orange too quiet, green good, red too
+loud. The colour follows the recent peak envelope rather than the instant frame,
+so natural dips between syllables do not flash orange when your level is fine.
+Silence reads as a flat grey line, clearly different from merely quiet.
+
+**After**, the reading grades that peak beside the confidence and silence
+figures. It is a nudge to glance at, never a veto - sending is still your call.
+
+**Across everything you have recorded**, `talkey-mic-check` sweeps the archive
+and reports the distribution, a one-line verdict, and with `--worst` the hottest
+and faintest clips. Run it to find out whether the microphone is set up right in
+general, rather than for one dictation.
+
+## Vocabulary
+
+whisper's only vocabulary mechanism is an initial prompt - there is no lexicon
+to load. talkey keeps one in `vocabulary.txt`, on by default, and it fixes the
+proper nouns whisper reliably mishears.
+
+Two things matter, both learned the hard way:
+
+- **Write natural sentences, not a word list.** A comma-separated term dump is a
+  style atypical of transcripts and destabilises the decoder - a long list has
+  been observed to make it drop whole sentences.
+- **Seed only what it actually gets wrong.** It already spells "TypeScript" and
+  "Kubernetes" correctly. A growing list drifts back toward being a word list.
+
+The prompt is applied only to dictations shorter than `TALKEY_VOCAB_MAX_S`
+(default 28 seconds). Past whisper's ~30 second stitching window a prompt can
+subtly alter a word - a "not" was dropped from a 43 second clip, reversing the
+meaning - so long-form dictation is left raw.
+
+## Troubleshooting
+
+```bash
+tail -f "${XDG_RUNTIME_DIR:-/tmp}/talkey/log"   # what talkey is doing
+systemctl --user status talkey-whisper          # the speech-to-text server
+journalctl --user -u talkey-whisper -f          # its logs
+talkey-diag                                     # the last dictation's live-path trace
+talkey-mic-check --worst                        # microphone sweep of the archive
+```
+
+**Nothing happens when I press the key.** Check the binding fired:
+`tail -f` the log while pressing. If nothing appears, i3 is not running the
+command - confirm the keycode with `xev`, and note that i3 does not strip
+comments from `set` values, so a trailing comment on a keycode line breaks it.
+
+**The text appears in the wrong window.** talkey locks onto the window that had
+focus when typing began. If your window manager moves focus during the
+dictation, set `TALKEY_TARGET_WINDOW=1` (the default) and avoid clicking away
+while it transcribes.
+
+**No HUD.** It needs `eww` and `inotify-tools`. Check the adapter is running
+(`talkey-hud`), and if you have more than one display, set `TALKEY_HUD_MONITOR`
+- otherwise the HUD opens on the primary one, which may not be the one you are
+looking at.
+
+**Transcripts contain "thank you" or "thanks for watching".** That is whisper
+hallucinating over near-silence. Your level is too low: run `talkey-mic-check`.
+
+**A held key machine-guns.** X re-enabled auto-repeat, usually after a keyboard
+reconnect or a suspend. `talkey-norepeat` should be running to catch that;
+otherwise `xset -r <keycode>` fixes it until the next reconnect.
+
+## Contributing
+
+Issues and pull requests are welcome. Two conventions worth knowing before you
+open one:
+
+- **Nothing polls.** State changes arrive via inotify, hooks or events. A
+  `sleep N; check; repeat` loop will be turned down.
+- **The renderer stays thin.** talkey writes state files and knows nothing about
+  how they are drawn. Logic belongs in the recorder, not the adapter.
+
+Shell code is bash with `set -euo pipefail` where it can be. Run `bash -n` over
+anything you change; there is no build step.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).

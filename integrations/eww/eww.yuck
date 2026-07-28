@@ -1,0 +1,64 @@
+;; The voice dictation HUD (eww/GTK). Reads the live state via eww-feed (the same
+;; files bin/talkey writes) and renders it; nothing here feeds back into the recorder,
+;; it is display only. This is the talkey renderer (it replaced the earlier
+;; alacritty overlay).
+;;
+;; Launch via integrations/eww/talkey-hud - it exports TALKEY_EWW_DIR (used by the
+;; deflisten below) and opens/closes this window per dictation. A bare
+;; `eww -c integrations/eww open talkeyhud` needs TALKEY_EWW_DIR exported first.
+
+;; One JSON line per tick -> the `hud` variable. eww runs the command through a
+;; shell (env vars expand) but does NOT set a config-dir var and won't resolve a
+;; bare/relative name, so the launcher (talkey-hud) exports TALKEY_EWW_DIR and we
+;; reference it here. Fields: header, transcript, level (0..100), zone, readout, dbfs.
+(deflisten hud
+  :initial '{"header":"listening","headertext":"LISTENING","transcript":"","timetext":"0s","long":false,"footertext":"tap ⏎ send  ·  ■ Square translates","footerkind":"plain","metricstext":"","pzone":"","level":0,"zone":"silence","meterpath":"blank.svg"}'
+  "$TALKEY_EWW_DIR/eww-feed")
+
+;; Studio-console layout. Header (state + elapsed), transcript hero, the level in
+;; an inset meter well, the final reading, and the hotkey-hint footer. Feature
+;; parity with the alacritty overlay; the styling lives in eww.scss.
+(defwidget talkeyhud []
+  (box :class "hud zone-${hud.zone}" :orientation "vertical" :space-evenly false :spacing 0 :hexpand true :halign "fill"
+    ;; header row: ● state ................... elapsed
+    (box :class "hud-head" :orientation "horizontal" :space-evenly false :hexpand true
+      (label :class "hud-state state-${hud.header}" :limit-width 30 :text "● ${hud.headertext}")
+      (box :hexpand true)   ; spacer: state stays natural width, time pinned right
+      (label :class {hud.long ? "hud-time long" : "hud-time"} :limit-width 16 :text {hud.timetext}))
+    ;; the hero - a FIXED-height transcript window (the feed pins it to a constant
+    ;; number of rows, newest at the bottom, older scrolled up and off) so the graph
+    ;; and footer below never move. yalign 0 keeps the rows top-aligned in the slot.
+    (label :class "hud-transcript" :halign "start" :xalign 0 :yalign 0 :text {hud.transcript})
+    ;; signature - the level trace, a smooth colour SVG drawn by the feed and
+    ;; reloaded each tick. eww's graph widget is smooth but single-colour and block
+    ;; glyphs look stepped, so the feed renders the curve itself (per-column colour
+    ;; via a gradient) and we just show the image. meterpath is a fresh file each
+    ;; tick so the widget reloads; "blank.svg" (relative to this config dir) is the
+    ;; placeholder until the first frame arrives.
+    (box :class "hud-well" :hexpand true :halign "fill"
+      (image :class "hud-graph" :path {hud.meterpath} :image-width 616 :image-height 84))
+    ;; final reading (conf / silence / peak), once talkey writes it on 'done'. ALWAYS
+    ;; present (a space when empty) so its row is reserved and the footer never
+    ;; jumps when the reading appears at the end of a dictation.
+    (label :class "hud-metrics pzone-${hud.pzone}" :halign "start"
+           :text {hud.metricstext != "" ? hud.metricstext : " "})
+    ;; hotkey hints - tap ⏎ send / ■ Square cancels (or armed will send/cancel)
+    (label :class "hud-footer foot-${hud.footerkind}" :halign "start" :text {hud.footertext})))
+
+;; Centred horizontally, anchored at the TOP so the panel grows only DOWNWARD.
+;; "top center" pins the top edge and centres the window; because the width is
+;; FIXED, both side edges are pinned too - text never reflows left or right, it
+;; only ever scrolls down/out of view. (A plain "center" anchor re-centred
+;; vertically as the height changed, making it jump; top-anchor avoids that.)
+;; focusable=false is critical: like the old no_focus rule, it must never take
+;; the keyboard so xdotool keeps typing into your real window.
+;; No :monitor here on purpose - hardcoding one would pin the HUD to a display
+;; only its author has. eww defaults to the primary monitor; set
+;; TALKEY_HUD_MONITOR (and optionally TALKEY_HUD_POS / _SIZE / _ANCHOR) and
+;; talkey-hud passes them to `eww open`, overriding the geometry below.
+(defwindow talkeyhud
+  :geometry (geometry :x "0px" :y "300px" :anchor "top center" :width "680px")
+  :stacking "fg"
+  :focusable false
+  :windowtype "notification"
+  (talkeyhud))

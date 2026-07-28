@@ -1,0 +1,34 @@
+# talkey context / style prompt
+#
+# whisper's ONLY vocabulary mechanism is this "initial prompt" - there is no
+# separate lexicon to load. It is used when TALKEY_VOCAB_PROMPT=1 (now the
+# default, since the server runs large-v3-turbo, which is robust enough to
+# accept it). talkey applies it ONLY to dictations shorter than TALKEY_VOCAB_MAX_S
+# seconds - see the length caveat below.
+#
+# IMPORTANT - how whisper prompts actually work (this bit us hard):
+#   * The prompt sets the STYLE to imitate and seeds a few proper nouns; it does
+#     NOT force words. Write a couple of NATURAL sentences in the style you
+#     actually dictate - clean technical English, questions and instructions.
+#   * A comma-separated WORD LIST is the WRONG format. A long word-list is an
+#     "odd style atypical for a transcript" and destabilises the decoder - it can
+#     make it DROP whole sentences (proven: a ~150-token list ate 3 sentences).
+#     Natural prose is safe; a term dump is not.
+#   * Seed ONLY the few proper nouns whisper genuinely gets wrong (project names,
+#     tool names, odd acronyms). It already spells "TypeScript", "Kubernetes"
+#     etc. fine, and a growing term list just drifts back toward the word-list.
+#   * Keep it SHORT - only the last ~224 tokens are used.
+#   * Even well-formed, a prompt can subtly drop/alter a word once a dictation
+#     crosses whisper's ~30s stitching window (a "not" was dropped on a 43s
+#     clip, flipping the meaning). That is why talkey caps it at TALKEY_VOCAB_MAX_S:
+#     short commands get the jargon fix; long-form dictation stays raw and safe.
+# Lines starting with # are ignored.
+
+# Replace the example below with your own two or three sentences: the way you
+# actually dictate, seeded with the few names whisper keeps getting wrong for
+# you. Add your project names to the last sentence.
+
+This is a technical software dictation - mostly coding questions and
+instructions in plain English. For example: let's open a pull request, rebase
+onto main, check the Jenkins CI pipeline, and review the SonarQube issues in
+Jira. We work in git worktrees. I use talkey to dictate.

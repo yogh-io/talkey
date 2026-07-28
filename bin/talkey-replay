@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# talkey-replay - reproduce the LIVE narration for an archived recording.
+#
+# Feeds a saved recording into bin/talkey-live-pump at true real-time speed - the
+# raw buffer grows exactly as it did when you spoke - and prints the live
+# transcript each time it changes, with the pump's per-pass numbers. This turns
+# "the live text was chunky" into something reproducible offline: point it at the
+# archived .wav and watch what the pump actually did.
+#
+#   talkey-replay recordings/dictate-XX…-foo.wav        # no stream prompt (default)
+#   talkey-replay -p recordings/…foo.wav                # WITH the full vocabulary prompt
+#                                                       #   (shows the chunky failure mode)
+#   talkey-replay -i 0.3 recordings/…foo.wav            # override interval
+#
+# Needs the whisper server up (same one talkey uses) and python3.
+set -u
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+for _l in "$SCRIPT_DIR/../lib" /usr/share/talkey/lib; do
+  [[ -f "$_l/common.sh" ]] && { . "$_l/common.sh"; break; }
+done
+WHISPER_URL="${TALKEY_WHISPER_URL:-http://127.0.0.1:8910/inference}"
+LANG_CODE="${TALKEY_LANG:-en}"
+INTERVAL="${TALKEY_STREAM_INTERVAL:-0.3}"
+PROMPT_FILE="${TALKEY_PROMPT_FILE:-$DATA_DIR/vocabulary.txt}"
+USE_PROMPT=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p|--prompt)   USE_PROMPT=1; shift ;;
+    -i|--interval) INTERVAL="$2"; shift 2 ;;
+    -*) echo "unknown flag $1" >&2; exit 2 ;;
+    *)  SRC="$1"; shift ;;
+  esac
+done
+: "${SRC:?usage: talkey-replay [-p] [-i SECS] <recording.wav>}"
+[[ -f "$SRC" ]] || { echo "no such file: $SRC" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "need python3" >&2; exit 1; }
+
+PROMPT=""
+if [[ "$USE_PROMPT" == 1 && -f "$PROMPT_FILE" ]]; then
+  PROMPT="$(grep -v '^[[:space:]]*#' "$PROMPT_FILE" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')"
+fi
+
+T="$(mktemp -d)"; trap 'rm -rf "$T"; kill $(jobs -p) 2>/dev/null' EXIT
+PCM="$T/full.pcm"; RAW="$T/live.raw"; TR="$T/live.transcript"; PID="$T/rec.pid"
+ffmpeg -hide_banner -loglevel error -i "$SRC" -ac 1 -ar 16000 -f s16le "$PCM" -y || exit 1
+: > "$RAW"; : > "$TR"
+DUR="$(python3 -c "import os;print(f'{os.path.getsize(\"$PCM\")/32000:.1f}')")"
+echo "replaying $(basename "$SRC")  (${DUR}s audio)  interval=${INTERVAL}s  prompt=$([[ $USE_PROMPT == 1 ]] && echo "vocabulary(${#PROMPT}c)" || echo none)"
+echo "────────────────────────────────────────────────────────"
+
+# keep recorder_alive() true for the pump's lifetime
+sleep "$(python3 -c "print(float('$DUR')+10)")" & echo $! > "$PID"
+
+# feed 0.2s of audio (6400 B) every 0.2s = true real-time
+( off=0; step=6400; total=$(stat -c%s "$PCM")
+  while [ "$off" -lt "$total" ]; do
+    dd if="$PCM" of="$RAW" bs=1 skip=$off seek=$off count=$step conv=notrunc status=none 2>/dev/null
+    off=$((off+step)); python3 -c 'import time;time.sleep(0.2)'
+  done ) & FEEDER=$!
+
+TALKEY_STREAM_DEBUG=1 TALKEY_WHISPER_URL="$WHISPER_URL" TALKEY_LANG="$LANG_CODE" \
+  TALKEY_STREAM_INTERVAL="$INTERVAL" TALKEY_PROMPT="$PROMPT" \
+  python3 "$SCRIPT_DIR/talkey-live-pump" "$RAW" "$TR" "$PID" 2>"$T/pump.err" & PUMP=$!
+
+prev=""
+while kill -0 "$FEEDER" 2>/dev/null || kill -0 "$PUMP" 2>/dev/null; do
+  cur="$(cat "$TR" 2>/dev/null)"
+  if [[ "$cur" != "$prev" ]]; then
+    printf '[%3sw] %s\n' "$(echo "$cur" | wc -w)" "$cur"
+    prev="$cur"
+  fi
+  python3 -c 'import time;time.sleep(0.15)'
+  kill -0 "$FEEDER" 2>/dev/null || break
+done
+kill "$PUMP" "$FEEDER" 2>/dev/null
+
+echo "────────────────────────────────────────────────────────"
+echo "per-pass (hyp=whisper output, agreed=2-pass match, shown=committed):"
+sed 's/^/  /' "$T/pump.err"

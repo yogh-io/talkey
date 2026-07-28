@@ -1,0 +1,652 @@
+#!/usr/bin/env bash
+# talkey - push-to-talk voice input for X11 / i3.
+#
+#   talkey dictate press|release   X / Tools key. Tap = toggle (press to start,
+#                               press again to stop). Hold = talk while held.
+#   talkey dictate start|stop      hold-only aliases (press=start, release=stop).
+#   talkey memo    start|stop       hold: record / release: play back. Mid-dictation:
+#                               tap toggles translate; double-tap restarts the
+#                               dictation (discard + record again).
+#   talkey submit                   tap: Enter. During a dictation: queue Enter,
+#                               or double-tap to cancel.
+#
+# Recording:  ffmpeg -> raw PCM on stdout (flushes continuously, so the live
+#             pump sees audio; an abrupt stop just truncates).
+# Live view:  a pump re-transcribes the whole buffer every few seconds and writes
+#             the display state files; the renderer adapter (integrations/eww)
+#             watches them and draws/closes the HUD on its own.
+# Final:      on stop, one clean transcription is typed via xdotool.
+# Context:    an initial prompt (vocabulary.txt) biases whisper toward your terms.
+set -euo pipefail
+
+MODE="${1:?usage: talkey dictate|memo press|release|start|stop | talkey submit}"
+ACTION="${2:-}"
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+# Finds the data root, loads ~/.config/talkey/talkey.env, sets STATE_DIR.
+for _l in "$SCRIPT_DIR/../lib" /usr/share/talkey/lib; do
+  [[ -f "$_l/common.sh" ]] && { . "$_l/common.sh"; break; }
+done
+[[ -n "${DATA_DIR:-}" ]] || { echo "talkey: cannot find lib/common.sh" >&2; exit 1; }
+
+SOUND_DIR="${TALKEY_SOUND_DIR:-$DATA_DIR/sounds}"
+mkdir -p "$STATE_DIR"
+
+RAW="$STATE_DIR/$MODE.raw"
+WAV="$STATE_DIR/$MODE.wav"
+PIDFILE="$STATE_DIR/$MODE.pid"
+TRANSCRIPT="$STATE_DIR/dictate.transcript"
+HEADER_FILE="$STATE_DIR/dictate.header"
+FOOTER_FILE="$STATE_DIR/dictate.footer"
+PUMP_PID="$STATE_DIR/dictate.pump.pid"
+DICTATE_PID="$STATE_DIR/dictate.pid"
+PRESSTIME="$STATE_DIR/dictate.presstime"
+MEMO_PRESSTIME="$STATE_DIR/memo.presstime"   # last Square press, mid-dictation only - for double-tap-to-restart
+PENDING="$STATE_DIR/dictate.pending"
+SUBMIT_REQ="$STATE_DIR/submit.requested"
+CANCEL_REQ="$STATE_DIR/cancel.requested"
+TRANSLATE_REQ="$STATE_DIR/translate.requested"   # Square toggles this mid-dictation: stt() then asks whisper to translate to English (task=translate, which only ever outputs English - see README)
+TARGET_WIN="$STATE_DIR/dictate.target_win"    # X window id to keep typing into
+DIAG="$STATE_DIR/live.diag"                    # per-dictation live-path trace (bin/talkey-diag reads it)
+STT_METRICS="$STATE_DIR/dictate.sttmetrics"    # "avg_logprob silence_pct peak_db" of the final transcription (stt writes, transcribe reads - side channel out of stt's subshell)
+METRICS_FILE="$STATE_DIR/dictate.metrics"      # display "conf% silence% peak_db cflag pflag" the overlay renders (passed as VO_METRICS)
+
+# --- tunables (override via env) -------------------------------------------
+WHISPER_URL="${TALKEY_WHISPER_URL:-http://127.0.0.1:8910/inference}"
+# Translate path only. The warm server runs large-v3-turbo, which is transcription
+# ONLY - it dropped whisper's translate task, so a translate request just gets
+# re-transcribed in the source language. Translate therefore shells out to
+# whisper-cli with the small MULTILINGUAL model (ggml-small.bin, not small.en),
+# which keeps the translate task. Cold load is ~1s; only the occasional Square-
+# translate pays it. Both default paths match the setup scripts' install layout.
+# Same two layouts bin/talkey-whisper-server accepts: a distro package, or a
+# build by setup/build-whisper.sh into ~/.local. Resolved lazily - only the
+# translate path needs these, so a setup without them still dictates fine.
+WHISPER_CLI="${TALKEY_WHISPER_CLI:-}"
+if [[ -z "$WHISPER_CLI" ]]; then
+  for c in /usr/bin/whisper-cli "$HOME/.local/opt/whisper.cpp/build/bin/whisper-cli"; do
+    if [[ -x "$c" ]]; then WHISPER_CLI="$c"; break; fi
+  done
+fi
+TRANSLATE_MODEL="${TALKEY_TRANSLATE_MODEL:-}"
+if [[ -z "$TRANSLATE_MODEL" ]]; then
+  for c in /usr/share/whisper.cpp-model-small/ggml-small.bin "$HOME/.local/share/whisper/ggml-small.bin"; do
+    if [[ -f "$c" ]]; then TRANSLATE_MODEL="$c"; break; fi
+  done
+fi
+AUDIO_SOURCE="${TALKEY_SOURCE:-default}"       # pulse source; "default" follows pactl
+TYPE_DELAY="${TALKEY_TYPE_DELAY:-8}"           # ms/char for xdotool type (lower = faster; ~8 = visible but quick)
+TARGET_WINDOW="${TALKEY_TARGET_WINDOW:-1}"     # 1 = lock output to the window focused when typing starts
+PASTE="${TALKEY_PASTE:-0}"                      # 1 = paste via clipboard (instant) instead of typing
+SUBMIT="${TALKEY_SUBMIT:-0}"                   # 1 = press Enter after typing (else use submit key)
+LANG_CODE="${TALKEY_LANG:-en}"                 # whisper language (needs a multilingual model)
+VOCAB_PROMPT="${TALKEY_VOCAB_PROMPT:-1}"       # 1 = bias the final transcription with vocabulary.txt so
+                                              # domain terms (SonarQube, Jira, worktree) spell right.
+                                              # ON by default now the server runs large-v3-turbo, which
+                                              # accepts a natural-context prompt without the sentence
+                                              # drops the small model suffered - but the bias is still
+                                              # applied only to SHORT dictations (see VOCAB_MAX_S / stt()).
+VOCAB_MAX_S="${TALKEY_VOCAB_MAX_S:-28}"        # only bias dictations shorter than this many seconds. Even
+                                              # on turbo a prompt can subtly drop a word past whisper's
+                                              # 30s stitching window (a "not" was dropped on a 43s clip,
+                                              # flipping the meaning), so long-form stays raw and safe.
+CONF_WARN="${TALKEY_CONF_WARN:-70}"            # overlay turns the confidence line amber below this percent.
+                                              # Kept low on purpose: confidence tracks self-assurance and
+                                              # clip length more than correctness, so amber is reserved for
+                                              # the genuinely rough tail, not every terse command.
+SIL_WARN="${TALKEY_SIL_WARN:-55}"             # ...or when the clip is more than this percent silent (dead air).
+QUIET_FLOOR="${TALKEY_QUIET_FLOOR:-300}"       # a 32ms audio frame with RMS below this (16-bit samples) counts
+                                              # as silent. Silence is measured from the AUDIO, not whisper's
+                                              # no_speech_prob - that reads ~0 on large-v3-turbo even for a
+                                              # music/garbage clip, so it was a dead gauge (see raw_audio_metrics).
+# The peak reading is graded into three zones (loudest sample, in dBFS) - shared by
+# the live sparkline (the renderer's meter) and the final reading:
+#   >= LOUD -> "too loud" (red)      : approaching the 0 dBFS ceiling, risks clipping
+#   LOW..LOUD -> "good" (green)      : the sweet spot - clean, strong, headroom to spare
+#   <  LOW  -> "too low" (orange)    : so faint whisper strains and may hallucinate filler
+# Defaults chosen from real tuning: -5 was too loud, ~-13 was ideal, -25 too faint.
+PEAK_LOUD_DB="${TALKEY_PEAK_LOUD_DB:--10}"     # at/above this = too loud (red)
+PEAK_LOW_DB="${TALKEY_PEAK_LOW_DB:--20}"       # below this = too low (orange); between the two = good (green)
+SOUNDS="${TALKEY_SOUNDS:-1}"                   # 1 = play start/stop/submit tones
+MEMO_GAIN="${TALKEY_MEMO_GAIN:-2.0}"           # memo playback volume boost (1.0 = original)
+STREAM="${TALKEY_STREAM:-1}"                   # 1 = write live display state while dictating
+STREAM_INTERVAL="${TALKEY_STREAM_INTERVAL:-0.3}" # seconds between live transcribe passes (LocalAgreement commit cadence)
+STREAM_PROMPT="${TALKEY_STREAM_PROMPT:-}"      # bias for the LIVE pump only; empty by default. A long
+                                              # prompt destabilises whisper's incremental output on the
+                                              # short/growing buffer (word counts swing wildly, so
+                                              # LocalAgreement never agrees -> live text stalls then dumps
+                                              # a line at once). The FINAL transcription still uses the
+                                              # full vocabulary ($PROMPT), so inserted text stays accurate.
+HOLD_MS="${TALKEY_HOLD_MS:-450}"               # press longer than this = hold; shorter = toggle
+DOUBLE_TAP_MS="${TALKEY_DOUBLE_TAP_MS:-400}"   # two Square presses this close, mid-dictation, = restart
+MAX_REC_S="${TALKEY_MAX_REC_S:-120}"           # HARD cap on one recording's length. ffmpeg self-stops here even
+                                              # if the key-release event is lost (X grab dropped, talkey killed) -
+                                              # without it a stuck key records for minutes and the live pump
+                                              # re-transcribes that ever-growing buffer until every core pegs and
+                                              # the machine freezes. No legit dictation runs this long; the cap
+                                              # is the safety net, not a usage limit.
+PROMPT_FILE="${TALKEY_PROMPT_FILE:-$DATA_DIR/vocabulary.txt}"
+ARCHIVE="${TALKEY_ARCHIVE:-1}"                 # 1 = save each recording's audio
+ARCHIVE_DIR="${TALKEY_ARCHIVE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/talkey/recordings}"
+ARCHIVE_TITLE="${TALKEY_ARCHIVE_TITLE:-1}"     # 1 = name recordings with an Ollama-made title
+OLLAMA_URL="${TALKEY_OLLAMA_URL:-http://localhost:11434/api/generate}"
+OLLAMA_MODEL="${TALKEY_OLLAMA_MODEL:-qwen2.5:3b}"  # small/fast; big "thinking" models are too slow
+OLLAMA_TIMEOUT="${TALKEY_OLLAMA_TIMEOUT:-12}"
+
+# External tools. Overridable so you can point at a different build, a wrapper,
+# or a drop-in replacement without editing this script.
+FFMPEG="${TALKEY_FFMPEG:-ffmpeg}"
+XDOTOOL="${TALKEY_XDOTOOL:-xdotool}"
+XCLIP="${TALKEY_XCLIP:-xclip}"
+PLAYER="${TALKEY_PLAYER:-paplay}"              # tones + memo playback
+PLAYER_FALLBACK="${TALKEY_PLAYER_FALLBACK:-aplay -q}"   # used only if $PLAYER is missing
+
+# Audio format. whisper wants 16kHz mono; changing these is for oddball capture
+# hardware, not for tuning quality.
+SAMPLE_RATE="${TALKEY_SAMPLE_RATE:-16000}"
+CHANNELS="${TALKEY_CHANNELS:-1}"
+
+# The help overlay window (talkey help).
+HELP_TERM="${TALKEY_HELP_TERM:-alacritty}"
+HELP_CLASS="${TALKEY_HELP_CLASS:-talkeyhelp}"  # must match the i3 for_window rule
+HELP_COLS="${TALKEY_HELP_COLS:-62}"
+HELP_LINES="${TALKEY_HELP_LINES:-14}"
+HELP_PAD="${TALKEY_HELP_PAD:-16}"
+# ---------------------------------------------------------------------------
+
+now_ms() { date +%s%3N; }
+log() { printf '%s talkey[%s] %s\n' "$(date +%H:%M:%S)" "$MODE" "$*" >> "$STATE_DIR/log"; }
+# Live-path diagnostics: one framed block per dictation in $DIAG. talkey and the
+# pump both append here; bin/talkey-diag prints the latest block with a verdict.
+diag() { printf '%s talkey %s\n' "$(date +%H:%M:%S.%3N)" "$*" >> "$DIAG"; }
+
+# Context prompt from vocabulary.txt (comment lines stripped, flattened).
+build_prompt() {
+  [[ -f "$PROMPT_FILE" ]] || return 0
+  grep -v '^[[:space:]]*#' "$PROMPT_FILE" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//'
+}
+PROMPT="$(build_prompt)"
+
+notify() {
+  command -v notify-send >/dev/null 2>&1 || return 0
+  notify-send -t "${2:-1500}" -h "string:x-canonical-private-synchronous:talkey" \
+    -h "string:x-dunst-stack-tag:talkey" "$1" >/dev/null 2>&1 || true
+}
+
+play_sound() {
+  [[ "$SOUNDS" == "1" ]] || return 0
+  local f="$SOUND_DIR/$1.wav"; [[ -f "$f" ]] || return 0
+  "$PLAYER" "$f" >/dev/null 2>&1 &
+}
+
+wrap_wav() { "$FFMPEG" -hide_banner -loglevel error -y -f s16le -ar "$SAMPLE_RATE" -ac "$CHANNELS" -i "$1" "$2" 2>/dev/null; }
+
+# Ask the local Ollama for a 2-3 word slug summarizing the transcript, so a
+# recording is named e.g. "dictate-...-buy-groceries-pick.wav" instead of just a
+# timestamp. Best-effort: prints nothing (caller keeps the timestamp name) if
+# titling is off, jq/Ollama are missing, or there's too little text.
+ollama_title() {
+  [[ "$ARCHIVE_TITLE" == "1" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local text; text="$(printf '%s' "$1" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  [[ ${#text} -ge 4 ]] || return 0
+  local prompt resp raw
+  prompt="Give 2 or 3 keywords that summarize the text (main nouns and verbs, skip filler words like the, a, to, is). Reply with ONLY the words, lowercase, space-separated, no punctuation. Text: $text"
+  resp="$(curl -sS --max-time "$OLLAMA_TIMEOUT" "$OLLAMA_URL" \
+      -d "$(jq -nc --arg m "$OLLAMA_MODEL" --arg p "$prompt" \
+              '{model:$m,prompt:$p,stream:false,options:{temperature:0.1}}')" 2>/dev/null)" || return 0
+  raw="$(printf '%s' "$resp" | jq -r '.response // empty' 2>/dev/null)"
+  [[ -n "$raw" ]] || return 0
+  # Drop any <think> block, lowercase, strip apostrophes, keep first 3 words.
+  printf '%s' "$raw" \
+    | sed '/<think>/,/<\/think>/d' \
+    | tr '[:upper:]' '[:lower:]' | sed "s/'//g" | tr -c 'a-z0-9' ' ' \
+    | awk '{n=NF>3?3:NF; out=""; for(i=1;i<=n;i++){ if(i>1) out=out"-"; out=out $i } print out}'
+}
+
+# Save the current recording to the archive dir as a timestamped wav. If a
+# transcript is passed, generate an Ollama title in the background and rename
+# the file once it's ready (the audio is already safely on disk either way).
+archive_audio() {
+  [[ "$ARCHIVE" == "1" && -s "$RAW" ]] || return 0
+  mkdir -p "$ARCHIVE_DIR"
+  local ts; ts="$(date +%Y%m%d-%H%M%S)"
+  local out="$ARCHIVE_DIR/${MODE}-${ts}.wav"
+  [[ -e "$out" ]] && out="$ARCHIVE_DIR/${MODE}-${ts}-$$.wav"   # avoid same-second clash
+  wrap_wav "$RAW" "$out" || return 0
+  log "archived ${out##*/}"
+  local text="${1:-}"
+  [[ -n "$text" ]] || return 0
+  # Background: titling can take a beat (cold model), so never block the caller.
+  ( t="$(ollama_title "$text")"
+    [[ -n "$t" && -e "$out" ]] && mv "$out" "${out%.wav}-${t}.wav" \
+      && log "titled ${MODE}-${ts}-${t}.wav" ) &
+}
+
+# Insert text into the focused window. Default: type (fast at TYPE_DELAY=1).
+# TALKEY_PASTE=1: put it on the clipboard and Ctrl+V (instant, but Ctrl+V must
+# paste in the target app - terminals often need Ctrl+Shift+V, so it's opt-in).
+# Remember the window focused right now, so all following keystrokes go there
+# even if focus-follows-mouse moves focus away mid-typing (the classic "half my
+# message landed in another chat" problem).
+capture_target() {
+  : > "$TARGET_WIN"
+  [[ "$TARGET_WINDOW" == "1" ]] && command -v "$XDOTOOL" >/dev/null 2>&1 || return 0
+  "$XDOTOOL" getactivewindow 2>/dev/null > "$TARGET_WIN" || : > "$TARGET_WIN"
+}
+
+# Send Enter only if focus is still on the window we typed into. With
+# focus-follows-mouse, the mouse can drift to another window between the last
+# keystroke and the Enter; sending Enter there fires in the wrong window - the
+# worst symptom (a half message sent in another chat). So compare the currently
+# focused window against the captured target and skip Enter on a mismatch,
+# rather than forcibly stealing focus back.
+send_return() {
+  local win cur
+  win="$(cat "$TARGET_WIN" 2>/dev/null)"
+  if [[ -n "$win" ]] && command -v "$XDOTOOL" >/dev/null 2>&1; then
+    cur="$("$XDOTOOL" getactivewindow 2>/dev/null)"
+    if [[ -n "$cur" && "$cur" != "$win" ]]; then
+      log "focus moved ($win -> $cur), skipping Enter"
+      return 0
+    fi
+  fi
+  "$XDOTOOL" key --clearmodifiers Return
+}
+
+insert_text() {
+  # Re-focus the captured target before typing (XTEST goes to the focused
+  # window; Chrome/Electron ignore directed synthetic events, so we can't target
+  # by window id). This can't stop focus drifting mid-typing if the mouse moves,
+  # but send_return guards the critical Enter by skipping it on a focus change.
+  local win; win="$(cat "$TARGET_WIN" 2>/dev/null)"
+  [[ -n "$win" ]] && "$XDOTOOL" windowactivate --sync "$win" 2>/dev/null || true
+  if [[ "$PASTE" == "1" ]] && command -v "$XCLIP" >/dev/null 2>&1; then
+    printf '%s' "$1" | "$XCLIP" -selection clipboard
+    "$XDOTOOL" key --clearmodifiers ctrl+v
+  else
+    "$XDOTOOL" type --clearmodifiers --delay "$TYPE_DELAY" -- "$1"
+  fi
+}
+
+# Acoustic health of the recording, straight from the raw PCM in ONE pass:
+#   silence% - RMS per ~32ms frame, count frames below QUIET_FLOOR. REAL dead air,
+#              unlike whisper's no_speech_prob, which reads ~0 on turbo even for a
+#              music/garbage clip. A high value on a clip that still produced lots
+#              of text is the hallucination tell.
+#   peak dB  - the loudest single sample as dBFS (0 = full scale). Too near 0 means
+#              clipping (mic too close/hot); too far below means a faint clip that
+#              whisper fills with hallucinated filler. Silence gauges HOW MUCH dead
+#              air; peak gauges whether the SPEECH itself is at a usable level.
+# Prints "silence_pct peak_db" (0 -99 if there is no audio). One od|awk pass keeps
+# the full-file read that silence already paid for from being doubled.
+raw_audio_metrics() {
+  [[ -s "$RAW" ]] || { printf '0 -99'; return; }
+  od -An -td2 -v "$RAW" 2>/dev/null | awk -v floor="$QUIET_FLOOR" '
+    { for(i=1;i<=NF;i++){ v=$i; s+=v*v; n++;
+        a=(v<0)?-v:v; if(a>pk)pk=a;
+        if(n>=512){ if(sqrt(s/n)<floor) quiet++; frames++; s=0; n=0 } } }
+    END{ sil=(frames>0)?int(100*quiet/frames+0.5):0;
+         db=(pk<1)?-99:20*log(pk/32768)/log(10);
+         printf "%d %d", sil, int(db<0?db-0.5:db+0.5) }'
+}
+
+# POST a wav to whisper; echo cleaned text (empty for silence). Also side-writes
+# "avg_logprob silence_pct" to $STT_METRICS for the overlay - out of band, because
+# this runs in a $(...) subshell and only its stdout (the text) reaches the caller.
+stt() {
+  local wav="$1" text raw alp="" sil peak secs use_prompt=0
+  : > "$STT_METRICS"
+  # Silence and peak level are acoustic (from the raw PCM), independent of whisper
+  # and of jq. One pass yields both; computed for every path.
+  read -r sil peak < <(raw_audio_metrics)
+
+  if [[ -f "$TRANSLATE_REQ" ]]; then
+    # TRANSLATE (Square toggled it): the warm turbo server can't translate, so run
+    # whisper-cli with the small model. -l is the SOURCE language (e.g. nl) so it
+    # knows what it's hearing; -tr produces English. The CLI text path has no
+    # avg_logprob, so confidence shows blank (silence/peak still apply).
+    if [[ ! -x "$WHISPER_CLI" || ! -f "$TRANSLATE_MODEL" ]]; then
+      log "translate unavailable: whisper-cli=${WHISPER_CLI:-none} model=${TRANSLATE_MODEL:-none}"
+      return 1
+    fi
+    text="$("$WHISPER_CLI" -m "$TRANSLATE_MODEL" -l "$LANG_CODE" -tr -nt -f "$wav" 2>>"$STATE_DIR/log")" || return 1
+    printf '%s %s %s' "" "$sil" "$peak" > "$STT_METRICS"
+  else
+    # TRANSCRIBE: the warm large-v3-turbo server over HTTP.
+    local -a args=(-sS --max-time 60 -F "file=@$wav" -F temperature=0 -F "language=$LANG_CODE")
+    # The prompt is a STYLE bias, not a forced dictionary: it fixes jargon spelling
+    # (SonarQube, Jira, worktree) but can also subtly drop/alter a word, and that
+    # risk grows past whisper's 30s stitching window (proven: a "not" dropped on a
+    # 43s clip, flipping the meaning). So bias only SHORT English dictations, where
+    # turbo applies it cleanly; long-form and non-English stay raw. See VOCAB_MAX_S.
+    secs=$(( $(stat -c%s "$RAW" 2>/dev/null || echo 0) / 32000 ))
+    [[ "$VOCAB_PROMPT" == "1" && -n "$PROMPT" && "$LANG_CODE" == "en" && "$secs" -lt "$VOCAB_MAX_S" ]] && use_prompt=1
+    (( use_prompt )) && args+=(-F "prompt=$PROMPT")
+    # verbose_json carries avg_logprob but needs jq to parse. Without jq, fall back
+    # to plain text - the transcript still works, just with no confidence number.
+    if command -v jq >/dev/null 2>&1; then
+      raw="$(curl "${args[@]}" -F response_format=verbose_json "$WHISPER_URL" 2>>"$STATE_DIR/log")" || return 1
+      text="$(printf '%s' "$raw" | jq -r '.text // ""' 2>/dev/null)"
+      # confidence = mean avg_logprob across segments (no segments -> blank).
+      alp="$(printf '%s' "$raw" | jq -r '[.segments[]?.avg_logprob] as $a | if ($a|length)>0 then (($a|add)/($a|length)) else empty end' 2>/dev/null)"
+    else
+      text="$(curl "${args[@]}" -F response_format=text "$WHISPER_URL" 2>>"$STATE_DIR/log")" || return 1
+    fi
+    printf '%s %s %s' "$alp" "$sil" "$peak" > "$STT_METRICS"
+  fi
+  # Flatten newlines to spaces FIRST (tr): whisper-cli's translate output leads
+  # with a newline and puts each segment on its own line - left in, that leading
+  # newline types as a phantom Enter before the text. The server path is already
+  # single-line, so tr is a no-op there. Then strip whisper's non-speech
+  # annotations - [BLANK_AUDIO]/[Music] bracket style AND the *sad music* /
+  # *coughing* asterisk style large-v3 emits on non-speech (that leaked into the
+  # typed text) - and trim/collapse whitespace.
+  text="$(printf '%s' "$text" | tr '\n' ' ' | sed -E 's/\[[^]]*\]//g; s/\*[^*]*\*//g; s/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]]+/ /g')"
+  # If nothing but (parenthesised) sound annotations remain, it wasn't speech.
+  local check; check="$(printf '%s' "$text" | sed -E 's/\([^)]*\)//g' | tr -d '[:space:]')"
+  [[ -z "$check" ]] && return 0
+  printf '%s' "$text"
+}
+
+# --- display state (files the renderer consumes) --------------------------
+# talkey is renderer-agnostic: it just writes the state files below. The renderer
+# adapter (integrations/eww) watches them and the recorder pidfile, drawing the
+# HUD on its own. So "display on" is simply: are we streaming?
+overlay_on()     { [[ "$STREAM" == "1" ]]; }
+overlay_state()  { overlay_on && printf '%s' "$1" > "$HEADER_FILE" || true; }
+overlay_body()   { overlay_on && printf '%s' "$1" > "$TRANSCRIPT"  || true; }
+overlay_footer() { overlay_on && printf '%s' "$1" > "$FOOTER_FILE" || true; }
+# Turn the final transcription's raw metrics (from stt) into the display line the
+# overlay renders: "conf% silence% peak_db cflag pflag". avg_logprob is a natural-
+# log per-token probability, so exp() maps it to a 0-100% confidence; silence is a
+# percent; peak is dBFS straight from the audio. Two flags so the overlay can point
+# at the culprit: cflag (conf/silence) and pflag (good|loud|low for the mic level).
+# All are visible nudges, never an auto-veto - enter stays yours (we proved
+# confidence tracks length/self-assurance, not correctness, so it can't gate send).
+overlay_metrics() {
+  overlay_on || return 0
+  local alp sil peak
+  read -r alp sil peak < "$STT_METRICS" 2>/dev/null || true
+  if [[ -z "${alp:-}" && -z "${sil:-}" ]]; then : > "$METRICS_FILE"; return 0; fi
+  # conf from avg_logprob (exp -> %); silence is already a percent. conf=-1 means
+  # no confidence available (jq-less path) - the overlay then shows silence only.
+  # pflag grades the peak into three zones: "loud" at/above PEAK_LOUD_DB (red),
+  # "low" below PEAK_LOW_DB (orange), "good" in between (green). peak=-99 (no
+  # audio) falls into low.
+  awk -v a="${alp:-}" -v sil="${sil:-0}" -v peak="${peak:--99}" \
+      -v cw="$CONF_WARN" -v sw="$SIL_WARN" -v loud="$PEAK_LOUD_DB" -v low="$PEAK_LOW_DB" 'BEGIN{
+    hasc = (a != "");
+    conf = hasc ? int(exp(a)*100+0.5) : -1;
+    cflag = (((hasc && conf<cw) || sil>sw) ? "warn" : "ok");
+    pflag = (peak>=loud) ? "loud" : ((peak<low) ? "low" : "good");
+    printf "%d %d %d %s %s", conf, sil, peak, cflag, pflag
+  }' > "$METRICS_FILE" 2>/dev/null || : > "$METRICS_FILE"
+}
+
+# Reset the display state at the start of a dictation. We do NOT launch a window
+# here - the renderer adapter (integrations/eww) watches the recorder pidfile and
+# opens/closes the HUD itself, so talkey stays renderer-agnostic. It just hands over
+# a clean slate: empty transcript/metrics, "listening" state, default footer.
+prime_display() {
+  overlay_on || return 0
+  : > "$TRANSCRIPT"; : > "$METRICS_FILE"; printf 'listening' > "$HEADER_FILE"; printf 'type' > "$FOOTER_FILE"
+}
+
+# Background pump: drive the live overlay with stable, word-by-word text.
+# talkey-live-pump applies the LocalAgreement-2 policy (commit a word only once
+# two consecutive passes agree) against the same whisper server, so the overlay
+# grows monotonically ~1-2 words behind speech instead of showing raw, flickery
+# whisper output. It reads the raw capture and writes the transcript itself, and
+# exits when the recorder's pidfile goes away or on SIGTERM (stop_pump).
+# Needs python3; without it the overlay just shows state + meter (no live text).
+start_pump() {
+  local raw="${1:-$RAW}" pidfile="${2:-$PIDFILE}"
+  command -v python3 >/dev/null 2>&1 || { log "no python3, live text disabled"; return 0; }
+  # No vocabulary prompt here on purpose - see STREAM_PROMPT. TALKEY_DIAG makes the
+  # pump append a structured per-pass trace + any crash traceback to $DIAG, so a
+  # bad live session can be inspected after the fact (bin/talkey-diag).
+  TALKEY_WHISPER_URL="$WHISPER_URL" TALKEY_LANG="$LANG_CODE" \
+  TALKEY_STREAM_INTERVAL="$STREAM_INTERVAL" TALKEY_PROMPT="$STREAM_PROMPT" \
+  TALKEY_DIAG="$DIAG" \
+    python3 "$SCRIPT_DIR/talkey-live-pump" "$raw" "$TRANSCRIPT" "$pidfile" \
+      2>>"$STATE_DIR/log" &
+  echo $! > "$PUMP_PID"
+  log "pump start pid=$! interval=${STREAM_INTERVAL}s stream_prompt=${#STREAM_PROMPT}chars"
+}
+
+stop_pump() {
+  [[ -f "$PUMP_PID" ]] || return 0
+  local p; p="$(cat "$PUMP_PID" 2>/dev/null || true)"; rm -f "$PUMP_PID"
+  [[ -n "$p" ]] || return 0
+  kill "$p" 2>/dev/null || true
+  # Wait (bounded) until the pump is actually gone. Otherwise an in-flight
+  # transcribe can write its (slightly older) text AFTER transcribe() sets the
+  # final text, reverting the overlay to a stale version on stop.
+  local _
+  for _ in $(seq 1 100); do kill -0 "$p" 2>/dev/null || break; sleep 0.01; done
+}
+
+record_start() {
+  local raw="${1:-$RAW}" pidfile="${2:-$PIDFILE}" mode="${3:-$MODE}"
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
+    log "already recording, ignoring"; return 0
+  fi
+  : > "$raw"
+  # stdout (piped to file) flushes continuously; a direct file output would stay
+  # buffered and the live pump would see an empty file.
+  "$FFMPEG" -hide_banner -loglevel error -f pulse -i "$AUDIO_SOURCE" -ac "$CHANNELS" -ar "$SAMPLE_RATE" -t "$MAX_REC_S" -f s16le - > "$raw" 2>>"$STATE_DIR/log" &
+  echo $! > "$pidfile"
+  log "recording -> $raw (pid $!)"
+  play_sound start
+  if [[ "$mode" == "dictate" && "$STREAM" == "1" ]]; then prime_display; start_pump "$raw" "$pidfile"; else notify "● recording"; fi
+}
+
+record_stop() {
+  local quiet="${1:-}" pidfile="${2:-$PIDFILE}"
+  [[ -f "$pidfile" ]] || { log "no active recording"; return 1; }
+  local pid; pid="$(cat "$pidfile" 2>/dev/null || true)"; rm -f "$pidfile"
+  [[ -n "$pid" ]] || return 1
+  kill -INT "$pid" 2>/dev/null || true   # SIGINT: graceful flush of the last audio
+  # Wait for ffmpeg to actually exit so the raw buffer is complete (no clipped
+  # last word). This is bounded and typically ~90ms.
+  for _ in $(seq 1 200); do kill -0 "$pid" 2>/dev/null || break; sleep 0.01; done
+  # Skip the stop tone when the caller passes "quiet" - used when the dictation is
+  # ending on a cancel, so the cancel tone plays alone (not stop-then-cancel).
+  [[ "$quiet" == quiet ]] || play_sound stop
+  log "stopped recording"
+}
+
+transcribe() {
+  [[ -s "$RAW" ]] || { log "empty recording"; overlay_state nospeech; overlay_body " "; return 0; }
+  wrap_wav "$RAW" "$WAV" || { notify "transcription failed"; overlay_state error; overlay_body " "; return 0; }
+  notify "… transcribing"
+  local text; text="$(stt "$WAV")" || { notify "transcription failed"; overlay_state error; overlay_body " "; return 0; }
+  if [[ -z "$text" ]]; then log "no speech"; notify "(no speech)"; overlay_state nospeech; overlay_body " "; return 0; fi
+  log "typing: $text"
+  # Show the final text in the overlay FIRST - typing can take a while for long
+  # transcripts, and we don't want the overlay to linger-out before reflecting it.
+  overlay_state done; overlay_body "$text"; overlay_metrics
+  capture_target   # lock onto the now-focused window before we start typing
+  insert_text "$text"
+  [[ "$SUBMIT" == "1" ]] && send_return
+  notify "✓ typed" 800
+}
+
+playback() {
+  [[ -s "$RAW" ]] || { log "empty recording"; return 0; }
+  # Boost the playback so a quiet memo is easy to hear. The limiter keeps the
+  # louder gain from clipping; fall back to a plain wrap if the filter is
+  # unavailable. The archived copy stays at the original level.
+  "$FFMPEG" -hide_banner -loglevel error -y -f s16le -ar "$SAMPLE_RATE" -ac "$CHANNELS" -i "$RAW" \
+    -af "volume=${MEMO_GAIN},alimiter=limit=0.97" "$WAV" 2>/dev/null \
+    || wrap_wav "$RAW" "$WAV" || return 0
+  notify "▶ playing"
+  "$PLAYER" "$WAV" 2>>"$STATE_DIR/log" || $PLAYER_FALLBACK "$WAV" 2>>"$STATE_DIR/log" || true
+}
+
+dictate_recording() { [[ -f "$DICTATE_PID" ]] && kill -0 "$(cat "$DICTATE_PID" 2>/dev/null)" 2>/dev/null; }
+
+begin_dictation() {
+  rm -f "$SUBMIT_REQ" "$CANCEL_REQ" "$TRANSLATE_REQ" "$MEMO_PRESSTIME"
+  : > "$DIAG"   # fresh trace per dictation; talkey-diag shows the latest
+  diag "==== dictate start raw=$RAW interval=${STREAM_INTERVAL}s stream_prompt=${#STREAM_PROMPT}c ===="
+  now_ms > "$PRESSTIME"
+  record_start
+}
+
+finish_dictation() {
+  : > "$PENDING"; trap 'rm -f "$PENDING"' EXIT
+  # If this dictation is ending on a cancel, stop the recorder WITHOUT the stop
+  # tone so the cancel tone plays alone (matches the old immediate-cancel sound).
+  local q=""; [[ -f "$CANCEL_REQ" ]] && q=quiet
+  record_stop "$q" || { rm -f "$PRESSTIME"; return 0; }
+  stop_pump
+  diag "live transcript at stop: '$(cat "$TRANSCRIPT" 2>/dev/null)'"
+  if [[ -f "$CANCEL_REQ" ]]; then
+    rm -f "$CANCEL_REQ" "$SUBMIT_REQ" "$RAW"
+    log "cancelled - discarded"; play_sound cancel; notify "✖ cancelled" 1200
+    overlay_state cancelled; overlay_body " "
+  else
+    overlay_state transcribing
+    transcribe
+    diag "final transcript: '$(cat "$TRANSCRIPT" 2>/dev/null)'"
+    archive_audio "$(cat "$TRANSCRIPT" 2>/dev/null)"
+    if [[ -f "$SUBMIT_REQ" ]]; then
+      rm -f "$SUBMIT_REQ"; log "queued submit -> Enter"; play_sound submit
+      send_return
+    fi
+  fi
+  rm -f "$PRESSTIME" "$TRANSLATE_REQ" "$MEMO_PRESSTIME"
+}
+
+# True while a dictation is still producing text (recording or transcribing).
+dictation_active() { dictate_recording || [[ -f "$PENDING" ]]; }
+
+# Square, double-tapped mid-dictation: throw away the audio captured so far
+# and start recording again, without leaving the dictation (X/Tools key stays
+# "held"). For a bad take - restart instead of finishing, discarding, and
+# re-pressing the dictate key. Targets the dictate mode's own raw/pid files
+# directly (not $RAW/$PIDFILE, which here are memo's - this runs from inside
+# a `talkey memo press` invocation).
+restart_dictation() {
+  local draw="$STATE_DIR/dictate.raw"
+  log "restart requested (double-tap Square)"
+  record_stop quiet "$DICTATE_PID" || true
+  stop_pump
+  rm -f "$TRANSLATE_REQ"
+  play_sound cancel
+  record_start "$draw" "$DICTATE_PID" dictate
+  notify "↺ restarted" 900
+}
+
+# The footer the submit-cycle (Triangle) currently owns - send/cancel/type -
+# so the restart-armed hint below can revert to the right one instead of
+# always snapping back to "type".
+current_submit_footer() {
+  if   [[ -f "$SUBMIT_REQ" ]]; then echo send
+  elif [[ -f "$CANCEL_REQ" ]]; then echo cancel
+  else echo type; fi
+}
+
+# Show a "tap again to restart" hint in the overlay footer for DOUBLE_TAP_MS,
+# then revert it - unless something else (a restart, a new dictation) has
+# already changed the footer, in which case leave it alone.
+arm_restart_hint() {
+  overlay_on || return 0
+  overlay_footer restart_armed
+  ( sleep "$(awk -v ms="$DOUBLE_TAP_MS" 'BEGIN{printf "%.3f", ms/1000}')"
+    [[ "$(cat "$FOOTER_FILE" 2>/dev/null)" == restart_armed ]] && overlay_footer "$(current_submit_footer)"
+  ) &
+}
+
+# Square, single-tap mid-dictation: toggle translate-to-English for this clip.
+# A second tap within DOUBLE_TAP_MS is a restart instead (see restart_dictation).
+square_mid_dictation() {
+  local now last
+  now="$(now_ms)"
+  last="$(cat "$MEMO_PRESSTIME" 2>/dev/null || echo 0)"
+  now_ms > "$MEMO_PRESSTIME"
+  if (( now - last <= DOUBLE_TAP_MS )); then
+    rm -f "$MEMO_PRESSTIME"
+    restart_dictation
+    return
+  fi
+  if [[ -f "$TRANSLATE_REQ" ]]; then
+    rm -f "$TRANSLATE_REQ"; log "translate off"; notify "translate off" 900
+  else
+    : > "$TRANSLATE_REQ"; log "translate on (-> English)"; notify "→ English" 900
+  fi
+  arm_restart_hint
+}
+
+case "$MODE/$ACTION" in
+  # Tap-or-hold: press starts (or toggles off); release stops only if it was a hold.
+  dictate/press)
+    if dictate_recording; then finish_dictation; else begin_dictation; fi ;;
+  dictate/release)
+    if dictate_recording; then
+      pt="$(cat "$PRESSTIME" 2>/dev/null || echo 0)"; pt="${pt:-0}"
+      (( $(now_ms) - pt >= HOLD_MS )) && finish_dictation || true
+    fi ;;
+  # Hold-only aliases.
+  dictate/start) begin_dictation ;;
+  dictate/stop)  finish_dictation ;;
+
+  # Square: mid-dictation a tap toggles translate-to-English for this clip
+  # (cancel moved to the Enter-button cycle), and a second tap within
+  # DOUBLE_TAP_MS restarts the dictation instead (discards the clip so far and
+  # records again). When idle it's memo (hold to record, release to play back).
+  # Translate: whisper's translate task only ever outputs English, so this is
+  # the Dutch->English path - on an English dictation it's a harmless no-op. The
+  # flag is read by stt() at finish; the overlay shows a "→ EN" badge while it's on.
+  memo/press)
+    if dictation_active; then
+      dictate_recording && square_mid_dictation
+    else
+      record_start
+    fi ;;
+  memo/release)  if record_stop; then archive_audio; playback; fi ;;
+  memo/start)    record_start ;;
+  memo/stop)     if record_stop; then playback; fi ;;
+
+  # Submit button (Triangle key / mouse button 9). Idle: a plain Enter. During a
+  # dictation: each press CYCLES the action that finish_dictation will take when
+  # the dictation ends - plain (just type) -> will send (type + Enter) -> will
+  # cancel (discard) -> plain. Nothing is committed mid-dictation, so an
+  # accidental press is undone by pressing again; the state resolves only at the
+  # end, and identically whether the dictation was held (key) or toggled (mouse),
+  # since both finish through finish_dictation. Not a double-tap - single presses,
+  # no timing window.
+  submit/*)
+    if dictation_active; then
+      if [[ -f "$SUBMIT_REQ" ]]; then
+        rm -f "$SUBMIT_REQ"; : > "$CANCEL_REQ"
+        log "end action -> cancel"; notify "✖ will cancel" 1000; overlay_footer cancel
+      elif [[ -f "$CANCEL_REQ" ]]; then
+        rm -f "$CANCEL_REQ" "$SUBMIT_REQ"
+        log "end action -> plain (type only)"; notify "⏎ will type, no send" 1000; overlay_footer type
+      else
+        : > "$SUBMIT_REQ"; rm -f "$CANCEL_REQ"
+        log "end action -> send"; notify "⏎ will send" 1000; overlay_footer send
+      fi
+    else
+      log "submit -> Enter"; play_sound submit; capture_target; send_return
+    fi ;;
+  # Toggle the key cheat-sheet overlay: open if closed, close if open.
+  help/*)
+    command -v "$HELP_TERM" >/dev/null 2>&1 || exit 0
+    HELP_PID="$STATE_DIR/help.pid"
+    if [[ -f "$HELP_PID" ]] && kill -0 "$(cat "$HELP_PID" 2>/dev/null)" 2>/dev/null; then
+      kill "$(cat "$HELP_PID" 2>/dev/null)" 2>/dev/null; rm -f "$HELP_PID"; log "help closed"
+    else
+      "$HELP_TERM" --class "$HELP_CLASS,$HELP_CLASS" -T "$HELP_CLASS" \
+        -o "window.dimensions.columns=$HELP_COLS" -o "window.dimensions.lines=$HELP_LINES" \
+        -o "window.padding.x=$HELP_PAD" -o "window.padding.y=$HELP_PAD" \
+        -e "$SCRIPT_DIR/talkey-help" >/dev/null 2>&1 &
+      echo $! > "$HELP_PID"; log "help opened"
+    fi
+    ;;
+
+  *) echo "usage: talkey dictate|memo press|release|start|stop | talkey submit | talkey help" >&2; exit 2 ;;
+esac

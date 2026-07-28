@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# talkey-norepeat - keep X auto-repeat disabled for specific keycodes.
+#
+# X rebuilds its per-key auto-repeat table whenever a keyboard re-enumerates
+# (Bluetooth reconnect, USB replug, sleep/wake). That silently re-enables
+# auto-repeat on keys that `xset -r` had turned off, so a held key starts
+# machine-gunning its binding (e.g. the dictate key flapping the overlay).
+#
+# This reapplies `xset -r` for the given keycodes at startup and on every
+# input-device add, so the setting survives reconnects. It is event-driven -
+# it blocks on the udev netlink monitor, never polls - and touches ONLY the
+# keycodes you pass, nothing else. Launch it from the graphical session (i3
+# exec) so it inherits $DISPLAY.
+#
+#   talkey-norepeat 194 191 193 192
+set -u
+
+codes=("$@")
+[[ ${#codes[@]} -gt 0 ]] || { echo "usage: ${0##*/} <keycode>..." >&2; exit 1; }
+
+# Single instance: i3 runs this via exec_always (so a reload can start it), but
+# we must not stack a new watcher on every reload. Hold a lock for our lifetime;
+# if another instance already holds it, just exit.
+LOCK="${XDG_RUNTIME_DIR:-/tmp}/talkey-norepeat.lock"
+exec 9>"$LOCK" 2>/dev/null || true
+if command -v flock >/dev/null 2>&1; then flock -n 9 || exit 0; fi
+
+reapply() { local c; for c in "${codes[@]}"; do xset -r "$c" 2>/dev/null; done; }
+
+reapply   # apply once at session start
+
+# udevadm monitor emits one line per event: "UDEV [time] <action> <path> (sub)".
+# We only care about a device appearing (add/bind); coalesce the burst that a
+# single connect produces, wait a moment for X to finish registering it, then
+# reapply.
+#
+# 9>&- keeps this long-lived child from inheriting the lock above: it outlives a
+# killed parent, and an inherited lock would make every later instance think one
+# is already running. The trap kills it with us rather than leaving it orphaned.
+last=0
+exec 8< <(udevadm monitor --udev --subsystem-match=input 2>/dev/null 9>&-)
+MON_PID=$!
+trap 'kill "$MON_PID" 2>/dev/null' EXIT INT TERM
+
+while read -r _ _ action _ <&8; do
+  case "$action" in
+    add|bind)
+      now="$(date +%s)"
+      (( now - last < 2 )) && continue   # one reapply per connect, not per sub-event
+      last="$now"
+      sleep 0.4                          # let X register the new device first
+      reapply
+      ;;
+  esac
+done

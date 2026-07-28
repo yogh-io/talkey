@@ -1,0 +1,89 @@
+// Voice HUD - "studio console" direction. Dark, precise, with a single zone-
+// coloured accent (the left channel-strip rail + the meter line) that ties the
+// whole panel to your current level. Transcript is the hero in a humanist sans;
+// the technical readouts (state, time, reading, keys) are mono, like a console's
+// labelling. Every colour/size derives from the tokens below.
+
+// --- tokens -----------------------------------------------------------------
+$panel-top: #171b20;
+$panel-bot: #0e1013;
+$well:      #08090b;
+$hairline:  rgba(255, 255, 255, 0.06);
+
+$ink:      #eef1f3;   // transcript
+$ink-dim:  #7f868c;   // labels, keys
+$ink-mute: #565c62;   // punctuation in the key hints
+
+$good:     #38d07f;
+$quiet:    #e2953a;
+$loud:     #f2573f;
+$silence:  #5b6570;
+$live:     #3fc7d6;   // listening
+$work:     #e0a92b;   // transcribing
+
+$mono: "UbuntuMono Nerd Font Mono", monospace;
+$sans: "Cantarell", "Noto Sans", sans-serif;
+
+// --- panel ------------------------------------------------------------------
+.hud {
+  min-width: 640px;
+  padding: 16px 20px 14px 18px;
+  border-radius: 16px;
+  border: 1px solid $hairline;
+  border-left: 3px solid $silence;                 // channel-strip accent (zone-tinted below)
+  background-image: linear-gradient(to bottom, $panel-top, $panel-bot);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+  color: $ink;
+}
+// The accent rail + meter follow the current zone - the signature tie.
+.zone-good    { border-left-color: $good;    }
+.zone-low     { border-left-color: $quiet;   }
+.zone-loud    { border-left-color: $loud;    }
+.zone-silence { border-left-color: $silence; }
+
+// --- header row: dot + state .... elapsed -----------------------------------
+.hud-head { margin-bottom: 10px; }
+.hud-dot   { font-size: 9px; margin-right: 8px; }
+.hud-state { font-family: $mono; font-size: 15px; }
+.state-listening    { color: $live; } .hud-dot.state-listening    { color: $live; }
+.state-transcribing { color: $work; } .hud-dot.state-transcribing { color: $work; }
+.state-done         { color: $good; } .hud-dot.state-done         { color: $good; }
+.state-cancelled    { color: $loud; } .hud-dot.state-cancelled    { color: $loud; }
+.state-nospeech     { color: $silence; } .hud-dot.state-nospeech   { color: $silence; }
+.hud-time { font-family: $mono; font-size: 15px; color: $ink-dim; }
+.hud-time.long { color: $work; }
+
+// --- transcript (hero) ------------------------------------------------------
+.hud-transcript {
+  min-width: 600px;          // pins the panel width (eww ignores min-width on .hud)
+  font-family: $sans;
+  font-size: 21px;
+  font-weight: 400;
+  color: $ink;
+  margin-bottom: 12px;
+}
+
+// --- meter well: two-row coloured sparkline ---------------------------------
+// Colours come from per-column pango spans in the feed, so no zone rules here.
+.hud-well {
+  background-color: $well;
+  border-radius: 9px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+}
+// The smooth colour trace, drawn as an SVG by the feed. Fixed pixel size (set on
+// the widget) so it never widens the panel; the image itself carries the colour.
+.hud-graph { margin: 1px 0; }
+
+// --- final reading (on done) ------------------------------------------------
+.hud-metrics {
+  font-family: $mono; font-size: 14px; color: $ink-dim;
+  letter-spacing: 0.02em; margin-bottom: 6px;
+}
+.pzone-good { color: $good; } .pzone-loud { color: $loud; } .pzone-low { color: $quiet; }
+
+// --- footer: hotkey hints ---------------------------------------------------
+.hud-footer  { font-family: $mono; font-size: 14px; color: $ink-mute; }
+.foot-send    { color: $good;  }
+.foot-cancel  { color: $loud;  }
+.foot-restart { color: $quiet; }

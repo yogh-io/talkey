@@ -1,0 +1,27 @@
+post_install() {
+  cat <<'EOF'
+
+talkey needs two more things before it can hear you:
+
+  1) a speech model - install one, e.g. from the AUR:
+       whisper.cpp-model-large-v3-turbo   (default; add -small for translate)
+     then start the server:
+       systemctl --user enable --now talkey-whisper
+
+  2) your key bindings - copy the i3 include and set your keycodes at the top:
+       cp /usr/share/talkey/i3/talkey.conf ~/.config/i3/talkey.conf
+       echo 'include ~/.config/i3/talkey.conf' >> ~/.config/i3/config
+     find your keycodes with:
+       xev | grep --line-buffered -oP 'keycode\s+\d+.*'
+
+Then reload i3, hold your dictate key, speak, and release.
+EOF
+}
+
+post_upgrade() {
+  cat <<'EOF'
+
+Note: ~/.config/i3/talkey.conf is your copy - this upgrade did not touch it.
+Compare it against /usr/share/talkey/i3/talkey.conf if bindings changed.
+EOF
+}

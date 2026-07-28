@@ -1,0 +1,21 @@
+[Unit]
+Description=whisper.cpp server for talkey (local speech-to-text)
+Documentation=https://github.com/yogh-io/talkey
+After=default.target
+
+[Service]
+# Keeps the model warm (in VRAM with a CUDA build) so each dictation is a fast
+# POST, not a cold model load. The wrapper resolves the binary and the model -
+# see bin/talkey-whisper-server for the two layouts it accepts.
+#
+# Default model is large-v3-turbo: multilingual, far better than small on
+# accented or disfluent speech, and robust enough to accept an initial prompt
+# (see VOCAB_PROMPT in bin/talkey) without the drops the small model suffered.
+# Override with TALKEY_MODEL_NAME / TALKEY_MODEL in the environment file below.
+EnvironmentFile=-%h/.config/talkey/whisper.env
+ExecStart=@BINDIR@/talkey-whisper-server
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

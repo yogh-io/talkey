@@ -1,0 +1,68 @@
+# Maintainer: Yogh <yogh-io@users.noreply.github.com>
+pkgname=talkey
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Push-to-talk voice input for X11/i3 - hold a key, speak, the text is typed. Offline, no API key."
+arch=('any')
+url="https://github.com/yogh-io/talkey"
+license=('MIT')
+depends=(
+  'bash'
+  'whisper-cpp'
+  'ffmpeg'
+  'xdotool'
+  'xorg-xset'
+  'libpulse'
+  'curl'
+  'python'
+)
+optdepends=(
+  'whisper.cpp-model-large-v3-turbo: the default speech model (AUR) - talkey needs some model'
+  'whisper.cpp-model-small: translate-to-English support (AUR)'
+  'eww: live dictation HUD'
+  'inotify-tools: live dictation HUD'
+  'jq: HUD feed and faster hook parsing'
+  'alacritty: the "talkey help" cheat-sheet overlay'
+  'ollama: auto-titled recordings in the archive'
+  'xclip: paste mode (TALKEY_PASTE=1) instead of typing'
+)
+install="$pkgname.install"
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd "$srcdir/$pkgname-$pkgver"
+
+  # Executables. Sibling scripts are found via $SCRIPT_DIR, so they must all
+  # land in the same bindir.
+  install -Dm755 -t "$pkgdir/usr/bin" \
+    bin/talkey \
+    bin/talkey-diag \
+    bin/talkey-mic-check \
+    bin/talkey-replay \
+    bin/talkey-help \
+    bin/talkey-live-pump \
+    bin/talkey-norepeat \
+    bin/talkey-whisper-server \
+    integrations/eww/talkey-hud
+
+  # Read-only data. The layout under this root matches a git checkout exactly,
+  # so the scripts resolve it with one probe and behave identically either way.
+  install -Dm644 -t "$pkgdir/usr/share/$pkgname" vocabulary.txt
+  install -Dm644 -t "$pkgdir/usr/share/$pkgname/lib" lib/common.sh
+  install -Dm644 -t "$pkgdir/usr/share/$pkgname/sounds" sounds/*.wav
+  install -Dm644 -t "$pkgdir/usr/share/$pkgname/i3" i3/talkey.conf
+  install -Dm644 -t "$pkgdir/usr/share/$pkgname/config" config/talkey.env.example
+  install -Dm644 -t "$pkgdir/usr/share/$pkgname/integrations/eww" \
+    integrations/eww/eww.yuck integrations/eww/eww.scss integrations/eww/blank.svg
+  install -Dm755 -t "$pkgdir/usr/share/$pkgname/integrations/eww" integrations/eww/eww-feed
+
+  # The user unit, with the wrapper's installed path baked in.
+  sed 's|@BINDIR@|/usr/bin|g' systemd/talkey-whisper.service.in \
+    > "$srcdir/talkey-whisper.service"
+  install -Dm644 "$srcdir/talkey-whisper.service" \
+    "$pkgdir/usr/lib/systemd/user/talkey-whisper.service"
+
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md
+  install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE
+}

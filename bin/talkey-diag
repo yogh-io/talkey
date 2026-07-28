@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# talkey-diag - show the live-narration trace of the most recent dictation.
+#
+# The live path spans three actors (talkey spawns the recorder + overlay + pump;
+# the pump writes the transcript the overlay renders). When it misbehaves it is
+# hard to tell WHICH actor failed. So talkey and bin/talkey-live-pump both append a
+# framed, timestamped trace to $STATE_DIR/live.diag - one block per dictation.
+# This prints that block and a one-line verdict.
+#
+#   talkey-diag            # latest dictation's trace + verdict
+#   talkey-diag --raw      # just cat the trace file
+#   talkey-diag --watch    # follow it live (tail -f)
+#
+# To reproduce a bad session offline, replay its archived audio through the pump
+# with bin/talkey-replay <recording.wav>.
+set -u
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+for _l in "$SCRIPT_DIR/../lib" /usr/share/talkey/lib; do
+  [[ -f "$_l/common.sh" ]] && { . "$_l/common.sh"; break; }
+done
+DIAG="$STATE_DIR/live.diag"
+
+[[ -f "$DIAG" ]] || { echo "no trace yet at $DIAG - do a dictation first."; exit 0; }
+
+case "${1:-}" in
+  --raw)   cat "$DIAG"; exit 0 ;;
+  --watch) exec tail -n +1 -f "$DIAG" ;;
+esac
+
+cat "$DIAG"
+
+# --- verdict ---------------------------------------------------------------
+# Read the pass lines the pump emitted (dbg format: "... pump buf=.. pass=..ms
+# hyp=Nw agreed=Nw shown=Nw") and summarise growth so a stall/dump or a crash is
+# obvious at a glance.
+echo
+echo "──────── verdict ────────"
+if grep -q ' pump CRASH' "$DIAG"; then
+  echo "PUMP CRASHED - traceback above. Live text never updated."
+elif ! grep -q ' pump start ' "$DIAG"; then
+  echo "Pump never started (no python3? live disabled?). Check 'pump start' line."
+else
+  awk '
+    / pump / && /shown=/ {
+      seen=0
+      for (i=1;i<=NF;i++) {
+        if ($i ~ /^shown=/)  { s=$i; sub(/shown=/,"",s); s=s+0; seen=1 }
+      }
+      if (!seen) next                       # skip lines without a real shown= field
+      passes++
+      if (s+0>maxshown+0) maxshown=s
+      if (prevshown!="") { d=s-prevshown; if (d>maxjump) maxjump=d }
+      prevshown=s
+    }
+    END {
+      printf "passes=%d  final_words=%d  biggest_single_jump=%d words\n", passes, maxshown, maxjump
+      if (maxjump>=8) print "-> CHUNKY: text jumped "maxjump" words at once (whisper output unstable - a long stream prompt does this)."
+      else if (passes>0) print "-> smooth: grew in small increments, tracking speech."
+    }' "$DIAG"
+fi
