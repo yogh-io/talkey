@@ -79,15 +79,32 @@ declare -A ARCH_PKG=(
   [jq]=jq              [python3]=python        [inotifywait]=inotify-tools
   [notify-send]=libnotify
 )
+# Not in any official repo, so `pacman -S` answers "target not found" - which is
+# a worse message than no message, because it reads as talkey being wrong about
+# its own dependency.
+declare -A AUR_PKG=([eww]=eww)
 pkg_hint() {  # pkg_hint <command>...
-  local c pkgs=()
-  if have pacman; then
-    for c in "$@"; do pkgs+=("${ARCH_PKG[$c]:-$c}"); done
-    printf 'pacman -S %s' "${pkgs[*]}"
-  else
+  local c repo=() aur=()
+  if ! have pacman; then
     printf 'install whatever your distro calls the packages providing: %s' "$*"
+    return
   fi
+  for c in "$@"; do
+    if [[ -n "${AUR_PKG[$c]:-}" ]]; then aur+=("${AUR_PKG[$c]}"); else repo+=("${ARCH_PKG[$c]:-$c}"); fi
+  done
+  (( ${#repo[@]} )) && printf 'sudo pacman -S %s' "${repo[*]}"
+  (( ${#repo[@]} && ${#aur[@]} )) && printf '\n   '
+  (( ${#aur[@]} )) && printf 'from the AUR (not in the official repos): %s' "${aur[*]}"
 }
+
+# --- what is still outstanding ---------------------------------------------
+# Steps that cannot finish record why here instead of failing quietly, and the
+# summary prints the list. "done." used to be unconditional, so a run where the
+# server never answered and no keys were bound still ended by telling you to
+# hold your dictate key and speak. Any step added later gets a truthful ending
+# by calling todo once.
+TODO=()
+todo() { TODO+=("$1"); }
 
 # --- config file -----------------------------------------------------------
 # Written one key at a time so re-running never clobbers settings from an
@@ -122,7 +139,7 @@ step_deps() {
   local missing=()
   # eww, inotifywait and jq are the HUD, and the HUD is not a bonus - without it
   # you dictate blind. Same list as the package's depends.
-  for c in ffmpeg paplay xdotool xset curl eww inotifywait jq; do
+  for c in ffmpeg paplay xdotool xset curl eww inotifywait jq xev; do
     have "$c" || missing+=("$c")
   done
   if (( ${#missing[@]} )); then
@@ -134,7 +151,6 @@ step_deps() {
   local soft=()
   have python3    || soft+=("python (live text in the HUD as you speak)")
   have notify-send|| soft+=("libnotify (desktop notifications)")
-  have xev        || soft+=("xorg-xev (so talkey-setup can read your keycodes)")
   have ollama     || soft+=("ollama (names recordings after what you said)")
   if (( ${#soft[@]} )); then
     info "optional, everything still dictates without them:"
@@ -162,6 +178,22 @@ installed_models() {
     [[ -f "$f" ]] || continue
     printf '%s\n' "$f"
   done
+}
+
+# Whether THIS model is where the server will look. installed_models answers
+# "is there any model at all", which is the wrong question before starting a
+# server that loads one specific file - same probe order as
+# bin/talkey-whisper-server, so the two cannot disagree.
+model_path() {  # model_path <name> -> path on stdout, 1 if absent
+  local name="$1" c
+  if [[ -n "${TALKEY_MODEL:-}" ]]; then
+    [[ -f "$TALKEY_MODEL" ]] && { printf '%s\n' "$TALKEY_MODEL"; return 0; }
+    return 1
+  fi
+  for c in "$MODEL_DIR/ggml-$name.bin" "/usr/share/whisper.cpp-model-$name/ggml-$name.bin"; do
+    [[ -f "$c" ]] && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
 }
 
 # whisper-server takes one model file, as a path, fixed when it starts - there is
@@ -206,17 +238,44 @@ step_model() {
 
   local pick
   pick="$(choose "which model do you want to use?" "${labels[@]}")"
-  (( pick > ${#MODELS[@]} )) && { info "nothing written - set TALKEY_MODEL_NAME when you have one"; return 0; }
+  (( pick > ${#MODELS[@]} )) && {
+    info "nothing written - set TALKEY_MODEL_NAME when you have one"
+    todo "install a speech model, then: talkey-setup model"
+    return 0
+  }
   IFS='|' read -r name size desc <<<"${MODELS[$((pick-1))]}"
+
+  # Always written, and exported: step_service runs in this same process and
+  # checks for this model, and writing it only when it differs from the default
+  # meant re-picking the default silently left the previous choice in place.
+  config_set TALKEY_MODEL_NAME "$name"
+  export TALKEY_MODEL_NAME="$name"
+
+  local p
+  if p="$(model_path "$name")"; then
+    ok "already there: $p"
+    return 0
+  fi
 
   model_howto "$name"
   info "talkey looks in $MODEL_DIR and /usr/share/whisper.cpp-model-*"
   info "somewhere else? set TALKEY_MODEL to the full path of the .bin"
 
-  # Only write the setting when it is not what talkey already defaults to, so
-  # the config stays a list of your choices rather than a copy of the defaults.
-  [[ "$name" != "large-v3-turbo" ]] && config_set TALKEY_MODEL_NAME "$name"
-  return 0
+  # Waiting here rather than marching on to start a server with no model to
+  # load. That server exits at once, systemd restarts it until it hits the
+  # start limit, and the next step spends 60 seconds printing dots at a unit
+  # that stopped trying seconds in.
+  printf '\n   Run one of those now, in another terminal - this waits.\n'
+  while true; do
+    read -r -p "   Enter to check again, or 's' to skip: " a
+    if [[ "${a,,}" == s ]]; then
+      todo "install the $name model ($size) - the ways in are above, or re-run: talkey-setup model"
+      info "skipped - the speech service needs it, so that is left too"
+      return 1
+    fi
+    if p="$(model_path "$name")"; then ok "found $p"; return 0; fi
+    warn "not there yet: $MODEL_DIR/ggml-$name.bin"
+  done
 }
 
 # ===========================================================================
@@ -232,34 +291,64 @@ step_service() {
   if ! systemctl --user cat "$unit" >/dev/null 2>&1; then
     warn "$unit is not installed"
     info "from a checkout, run setup/install.sh - it installs the units"
+    todo "install the systemd units: run setup/install.sh from a talkey checkout"
+    return 1
+  fi
+
+  # Someone pointing at their own server has no model and no unit of ours to
+  # care about, so neither check applies to them.
+  if [[ -z "${TALKEY_WHISPER_URL:-}" ]] && ! model_path "${TALKEY_MODEL_NAME:-large-v3-turbo}" >/dev/null; then
+    warn "no ${TALKEY_MODEL_NAME:-large-v3-turbo} model, so the server would exit as soon as it started"
+    info "get the model first: talkey-setup model"
+    todo "install a speech model, then: talkey-setup service"
     return 1
   fi
 
   if systemctl --user is-active --quiet "$unit"; then
     ok "already running"
   else
-    ask_yn "start it now, and at every login?" || { info "skipped"; return 0; }
-    systemctl --user enable --now "$unit" || { warn "could not start $unit"; return 1; }
+    ask_yn "start it now, and at every login?" || {
+      info "skipped"
+      todo "start the speech service: systemctl --user enable --now $unit"
+      return 0
+    }
+    # An earlier start with no model can leave the unit rate-limited, and it
+    # will not come back until the failure count is cleared.
+    systemctl --user reset-failed "$unit" 2>/dev/null || true
+    systemctl --user enable --now "$unit" || {
+      warn "could not start $unit"
+      todo "start the speech service: systemctl --user enable --now $unit"
+      return 1
+    }
   fi
 
   # A 1.6GB model off cold cache takes far longer than a second to load, so a
   # single immediate check would report a fault that is not there.
   local host="${TALKEY_WHISPER_HOST:-127.0.0.1}" port="${TALKEY_WHISPER_PORT:-8910}"
   printf '   %s-%s waiting for the server on %s:%s ' "$DIM" "$R" "$host" "$port"
-  local up=0 _
+  local up=0 dead=0 _
   for _ in $(seq 1 60); do
     if curl -sS --max-time 2 -o /dev/null "http://$host:$port/" 2>/dev/null; then up=1; break; fi
+    # Stop the moment the unit gives up. Waiting out the full minute at a
+    # service that already died just delays the bad news by 50 seconds.
+    if ! systemctl --user is-active --quiet "$unit"; then dead=1; break; fi
     printf '.'; sleep 1
   done
   printf '\n'
   if (( up )); then
     ok "responding on $host:$port"
-  else
-    warn "no answer within 60s"
-    info "check: systemctl --user status $unit"
-    info "       journalctl --user -u $unit -n 30"
-    return 1
+    return 0
   fi
+  if (( dead )); then
+    warn "the service stopped. Its last words:"
+  else
+    warn "no answer within 60s. The service is running but not answering:"
+  fi
+  # Printed here rather than named as a command to go and run - the reason is
+  # usually one line, and it is the whole point of this step.
+  journalctl --user -u "$unit" -n 5 --no-pager -o cat 2>/dev/null | sed 's/^/     /'
+  todo "the speech server is not answering on $host:$port - fix what it says above, then: systemctl --user restart $unit"
+  return 1
 }
 
 # ===========================================================================
@@ -301,16 +390,37 @@ capture_keycode() {  # capture_keycode "role" -> keycode on stdout, empty if ski
 
 # The bindings file keeps every keycode in `set $key_* NNN` lines at the top,
 # specifically so only those lines ever need rewriting.
+# A role with no keycode is commented out rather than left holding a number
+# nobody pressed. Every line mentioning the variable has to go, not just the
+# `set`: i3 does not substitute an undefined variable, so a surviving
+# `bindcode $key_memo` is a config error on reload. \b does not match before
+# an underscore, so $key_dictate never catches $key_dictate_alt.
 write_i3_bindings() {  # write_i3_bindings <dest> <dictate> <alt> <memo> <submit>
-  local dest="$1" d="$2" a="$3" m="$4" s="$5" src="$DATA_DIR/bindings/i3.conf"
+  local dest="$1" src="$DATA_DIR/bindings/i3.conf"
   [[ -f "$src" ]] || { warn "missing $src"; return 1; }
-  local tmp; tmp="$(mktemp)"
-  sed -E \
-    -e "s|^set \\\$key_dictate .*|set \$key_dictate $d|" \
-    -e "s|^set \\\$key_dictate_alt .*|set \$key_dictate_alt $a|" \
-    -e "s|^set \\\$key_memo .*|set \$key_memo $m|" \
-    -e "s|^set \\\$key_submit .*|set \$key_submit $s|" \
-    "$src" > "$tmp"
+  local -A val=([key_dictate]="$2" [key_dictate_alt]="$3" [key_memo]="$4" [key_submit]="$5")
+  local tmp v args=()
+  tmp="$(mktemp)"
+  for v in key_dictate key_dictate_alt key_memo key_submit; do
+    if [[ -n "${val[$v]}" ]]; then
+      args+=(-e "s|^set \\\$$v .*|set \$$v ${val[$v]}|")
+    else
+      args+=(-e "/^[^#].*\\\$$v\\b/s|^|# unbound by talkey-setup: |")
+    fi
+  done
+  sed -E "${args[@]}" "$src" > "$tmp"
+
+  # One line names every key at once - the watcher that keeps auto-repeat off.
+  # The rule above would comment it out for mentioning an unbound variable,
+  # taking the bound keys' protection with it, so rebuild it from what is left.
+  local bound=()
+  for v in key_dictate key_dictate_alt key_memo key_submit; do
+    [[ -n "${val[$v]}" ]] && bound+=("\$$v")
+  done
+  if (( ${#bound[@]} )); then
+    sed -i -E "s|^(# unbound by talkey-setup: )?exec_always --no-startup-id talkey-norepeat .*|exec_always --no-startup-id talkey-norepeat ${bound[*]}|" "$tmp"
+  fi
+
   mv -f "$tmp" "$dest"
   ok "wrote $dest"
 }
@@ -319,8 +429,8 @@ step_keys() {
   step "key bindings"
   if ! have xev; then
     warn "xev is not installed, so keys cannot be read from the keyboard"
-    info "$(pkg_hint xev), then re-run: talkey-setup keys"
-    ask_yn "type the keycodes in by hand instead?" n || return 1
+    info "$(pkg_hint xev) - then re-run: talkey-setup keys"
+    info "or type the numbers in below; 'xmodmap -pke' lists them"
   fi
 
   local wm="" pick
@@ -332,40 +442,68 @@ step_keys() {
     case "$pick" in 1) wm=i3 ;; 2) wm=sxhkd ;; 3) wm=xbindkeys ;; 4) wm=none ;; esac
   fi
 
-  # Defaults are the Keychron K10 media keys this was written on - fine as a
-  # starting point, wrong for almost everyone, which is the entire reason for
-  # asking.
-  local -A code=([dictate]=194 [dictate_alt]=191 [memo]=193 [submit]=192)
+  # Seeded from a previous run, never from built-in numbers. The defaults in
+  # bindings/i3.conf are a Keychron K10's media keys - right for the machine
+  # this was written on and wrong for nearly everyone - so offering to "keep"
+  # them would quietly bind four keys the user does not have, and report them
+  # as chosen. A role nobody presses stays empty and gets commented out.
+  local dest="${XDG_CONFIG_HOME:-$HOME/.config}/i3/talkey.conf"
+  local -A code=([dictate]="" [dictate_alt]="" [memo]="" [submit]="")
+  local role prev
+  if [[ -f "$dest" ]]; then
+    for role in dictate dictate_alt memo submit; do
+      prev="$(sed -nE "s|^set \\\$key_$role ([0-9]+).*|\1|p" "$dest" | head -1)"
+      [[ -n "$prev" ]] && code[$role]="$prev"
+    done
+    [[ -n "${code[dictate]}" ]] && info "found your current keys in $dest - press Enter at a prompt to keep one"
+  fi
+
   local -A prompt=(
     [dictate]="dictate - hold to talk"
     [submit]="submit - send / Enter"
     [memo]="memo - translate toggle, double-tap restart, hold for a memo"
     [dictate_alt]="dictate in a second language (optional)"
   )
-  local role got
+  local got
   for role in dictate submit memo dictate_alt; do
-    if have xev; then
-      if got="$(capture_keycode "${prompt[$role]}")" && [[ -n "$got" ]]; then
-        code[$role]="$got"
+    while true; do
+      if have xev; then
+        # Announced before xev takes the focus - once the Event Tester window is
+        # up, the prompt is behind it and nobody is reading this line.
+        printf '\n   %s%s%s\n' "$B" "${prompt[$role]}" "$R"
+        [[ -n "${code[$role]}" ]] && info "currently ${code[$role]}"
+        got="$(capture_keycode "${prompt[$role]}")" || got=""
       else
-        info "kept default ${code[$role]} for $role"
+        read -r -p "   keycode for ${prompt[$role]} [${code[$role]:-none}]: " got
+        [[ "$got" =~ ^[0-9]+$ ]] || got=""
       fi
-    else
-      read -r -p "   keycode for ${prompt[$role]} [${code[$role]}]: " got
-      [[ "$got" =~ ^[0-9]+$ ]] && code[$role]="$got"
-    fi
+      if [[ -n "$got" ]]; then code[$role]="$got"; break; fi
+      # Nothing pressed. Only an offer to keep if there is something to keep.
+      if [[ -n "${code[$role]}" ]]; then info "kept ${code[$role]}"; break; fi
+      if [[ "$role" == dictate_alt ]]; then info "left unbound - you only dictate in one language"; break; fi
+      ask_yn "nothing pressed - try $role again?" || { info "$role left unbound"; break; }
+    done
   done
 
   printf '\n'
-  info "dictate=${code[dictate]} submit=${code[submit]} memo=${code[memo]} alt=${code[dictate_alt]}"
+  if [[ -z "${code[dictate]}" ]]; then
+    warn "no dictate key, so there is nothing to write - that is the one key talkey needs"
+    todo "bind your keys: talkey-setup keys"
+    return 1
+  fi
+  info "dictate=${code[dictate]:-unbound} submit=${code[submit]:-unbound} memo=${code[memo]:-unbound} alt=${code[dictate_alt]:-unbound}"
 
   # talkey-norepeat needs the same codes, and a systemd unit has no argument
   # list - so they have to live in the config for the non-i3 paths to work.
-  config_set TALKEY_NOREPEAT_KEYCODES "${code[dictate]} ${code[dictate_alt]} ${code[memo]} ${code[submit]}"
+  # Only the keys that exist: an empty slot would pass a blank argument.
+  local codes=()
+  for role in dictate dictate_alt memo submit; do
+    [[ -n "${code[$role]}" ]] && codes+=("${code[$role]}")
+  done
+  config_set TALKEY_NOREPEAT_KEYCODES "${codes[*]}"
 
   case "$wm" in
     i3)
-      local dest="${XDG_CONFIG_HOME:-$HOME/.config}/i3/talkey.conf"
       if [[ -f "$dest" ]]; then
         ask_yn "$dest exists - overwrite it?" n || { info "left it alone"; return 0; }
         cp -f "$dest" "$dest.bak"; info "kept a copy at $dest.bak"
@@ -373,9 +511,23 @@ step_keys() {
       mkdir -p "$(dirname "$dest")"
       write_i3_bindings "$dest" "${code[dictate]}" "${code[dictate_alt]}" \
         "${code[memo]}" "${code[submit]}" || return 1
-      printf '\n   %sOne line left, in your i3 config:%s\n\n' "$B" "$R"
-      printf '     include %s\n\n' "${dest/#$HOME/~}"
-      info "then reload i3 (Mod+Shift+R)"
+
+      # Written, but i3 does not read it until it is included. Checking beats
+      # printing a line and hoping: an un-included file behaves exactly like a
+      # broken install, and there is nothing to tell the two apart.
+      local i3cfg="" c
+      for c in "${XDG_CONFIG_HOME:-$HOME/.config}/i3/config" "$HOME/.i3/config"; do
+        [[ -f "$c" ]] && { i3cfg="$c"; break; }
+      done
+      if [[ -n "$i3cfg" ]] && grep -qE "^[[:space:]]*include[[:space:]]+.*talkey\.conf" "$i3cfg"; then
+        ok "already included from $i3cfg"
+        info "reload i3 (Mod+Shift+R) to pick up the new keycodes"
+      else
+        printf '\n   %sOne line left, in %s:%s\n\n' "$B" "${i3cfg:-your i3 config}" "$R"
+        printf '     include %s\n\n' "${dest/#$HOME/\~}"
+        info "then reload i3 (Mod+Shift+R) - the keys do nothing until you do"
+        todo "add 'include ${dest/#$HOME/\~}' to ${i3cfg:-~/.config/i3/config}, then reload i3 (Mod+Shift+R)"
+      fi
       ;;
     sxhkd|xbindkeys)
       local src="$DATA_DIR/bindings/sxhkdrc"
@@ -396,7 +548,10 @@ main() {
   local what="${1:-all}"
   case "$what" in
     -h|--help|help)
-      sed -n '2,17p' "$(readlink -f "$0")" | sed 's/^# \?//'
+      # Every comment line after the shebang, up to the first line of code. A
+      # fixed line range used to cut the list off at `keys`, hiding `service` -
+      # the one subcommand that recovers a failed run.
+      awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$(readlink -f "$0")"
       exit 0 ;;
     all|model|service|keys)
       # These ask questions. Run blind - a pacman hook, a script - they would
@@ -411,9 +566,21 @@ main() {
     deps)    step_deps ;;
     *) die "unknown step '$what' - try: all, model, service, keys, deps" ;;
   esac
+  # The ending reports what actually happened. Anything a step could not finish
+  # is listed, in the order it has to be done, with the command that fixes it.
+  local cfg="${TALKEY_CONFIG/#$HOME/\~}"
+  if (( ${#TODO[@]} )); then
+    printf '\n%snot ready yet.%s %d thing%s left before you can dictate:\n\n' \
+      "$B" "$R" "${#TODO[@]}" "$( (( ${#TODO[@]} == 1 )) || printf s )"
+    local i=1 t
+    for t in "${TODO[@]}"; do printf '  %d) %s\n' "$i" "$t"; i=$((i+1)); done
+    printf '\nthen run talkey-setup again - it checks every one of these.\n'
+    printf 'settings live in %s\n' "$cfg"
+    return 1
+  fi
   if [[ "$what" == all ]]; then
     printf '\n%sdone.%s hold your dictate key, speak, release.\n' "$B" "$R"
-    printf 'settings live in %s - talkey-setup keys rebinds later.\n' "${TALKEY_CONFIG/#$HOME/~}"
+    printf 'settings live in %s - talkey-setup keys rebinds later.\n' "$cfg"
   fi
 }
 

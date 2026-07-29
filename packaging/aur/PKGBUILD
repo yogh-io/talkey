@@ -28,6 +28,10 @@ depends=(
   'eww'
   'inotify-tools'
   'jq'
+  # talkey-setup reads your keycodes off the keyboard with this. 37KB, and
+  # without it the one step that cannot be done from documentation - turning a
+  # key you press into a number - falls back to typing numbers by hand.
+  'xorg-xev'
 )
 optdepends=(
   'whisper.cpp-model-large-v3-turbo: the default speech model (AUR) - talkey needs some model'
@@ -35,7 +39,6 @@ optdepends=(
   'python: live word-by-word text in the HUD as you speak - dictation itself does not need it'
   'libnotify: desktop notifications alongside the HUD, and the only feedback if you disable it'
   'ollama: names archived recordings after what you said - needs a model pulled too (default qwen2.5:3b)'
-  'xorg-xev: lets talkey-setup read your keycodes off the keyboard'
   'xclip: paste mode (TALKEY_PASTE=1) instead of typing'
   'sxhkd: key bindings without i3'
   'xbindkeys: key bindings without i3'

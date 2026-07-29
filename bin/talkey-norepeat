@@ -41,6 +41,15 @@ reapply() { local c; for c in "${codes[@]}"; do xset -r "$c" 2>/dev/null; done; 
 
 reapply   # apply once at session start
 
+# Without udevadm the loop below reads EOF on its first pass and this exits 0,
+# having reapplied exactly once - so auto-repeat comes back at the next
+# reconnect and the watcher that was supposed to catch it is already gone. Say
+# so instead: the one-shot above still happened, but this is not what it claims.
+command -v udevadm >/dev/null 2>&1 || {
+  echo "${0##*/}: udevadm not found - reapplied once, but cannot watch for keyboard reconnects" >&2
+  exit 1
+}
+
 # udevadm monitor emits one line per event: "UDEV [time] <action> <path> (sub)".
 # We only care about a device appearing (add/bind); coalesce the burst that a
 # single connect produces, wait a moment for X to finish registering it, then
