@@ -47,7 +47,9 @@ ask_yn() {  # ask_yn "question" [y|n] -> 0 for yes
   local q="$1" def="${2:-y}" a prompt="[Y/n]"
   [[ "$def" == n ]] && prompt="[y/N]"
   while true; do
-    read -r -p "   $q $prompt " a
+    # A closed stdin used to re-prompt forever. It means nobody is there to
+    # answer, so stop rather than spin.
+    read -r -p "   $q $prompt " a || { printf '\n'; die "input ended - nothing was changed"; }
     a="${a:-$def}"
     case "${a,,}" in y|yes) return 0 ;; n|no) return 1 ;; esac
   done
@@ -62,7 +64,7 @@ choose() {
   printf '   %s\n' "$q" >&2
   for ((i=1; i<=n; i++)); do printf '     %d) %s\n' "$i" "${!i}" >&2; done
   while true; do
-    read -r -p "   choice [1-$n]: " a
+    read -r -p "   choice [1-$n]: " a || { printf '\n' >&2; die "input ended - nothing was changed"; }
     [[ "$a" =~ ^[0-9]+$ ]] && (( a >= 1 && a <= n )) && { printf '%s' "$a"; return 0; }
   done
 }
@@ -390,6 +392,34 @@ capture_keycode() {  # capture_keycode "role" -> keycode on stdout, empty if ski
 
 # The bindings file keeps every keycode in `set $key_* NNN` lines at the top,
 # specifically so only those lines ever need rewriting.
+# --- what is already bound -------------------------------------------------
+# Capturing a key that another binding already owns produces the failure that
+# looks most like talkey being broken: the key does something, just not this.
+# i3 resolves includes, so the scan has to as well.
+i3_config_files() {
+  local main="$1" line inc
+  [[ -f "$main" ]] || return 0
+  printf '%s\n' "$main"
+  while read -r line; do
+    inc="${line#*include }"; inc="${inc%%#*}"; inc="${inc//\"/}"
+    inc="${inc#"${inc%%[![:space:]]*}"}"; inc="${inc%"${inc##*[![:space:]]}"}"
+    [[ "$inc" == talkey.conf || "$inc" == *"/talkey.conf" ]] && continue  # ours
+    [[ "$inc" == '~'* ]] && inc="$HOME${inc#\~}"
+    [[ "$inc" != /* ]] && inc="$(dirname "$main")/$inc"
+    [[ -f "$inc" ]] && printf '%s\n' "$inc"
+  done < <(grep -hE '^[[:space:]]*include[[:space:]]' "$main" 2>/dev/null)
+}
+
+# Prints "file:line: the offending line" for anything already bound to this
+# keycode, so the report can name where to go and change it.
+keycode_conflict() {  # keycode_conflict <code> <i3cfg>
+  local code="$1" cfg="$2" f
+  while read -r f; do
+    grep -nE "^[[:space:]]*bindcode([[:space:]]+--[a-z-]+)*[[:space:]]+${code}\b" "$f" 2>/dev/null \
+      | sed "s|^|${f}:|"
+  done < <(i3_config_files "$cfg")
+}
+
 # A role with no keycode is commented out rather than left holding a number
 # nobody pressed. Every line mentioning the variable has to go, not just the
 # `set`: i3 does not substitute an undefined variable, so a surviving
@@ -425,6 +455,21 @@ write_i3_bindings() {  # write_i3_bindings <dest> <dictate> <alt> <memo> <submit
   ok "wrote $dest"
 }
 
+# Reloading is the difference between "written" and "live". i3-msg reports
+# failures as JSON with "success":false rather than a non-zero exit, so the
+# output is what has to be read.
+i3_reload() {
+  have i3-msg || { info "reload i3 (Mod+Shift+R) to load the bindings"; return 0; }
+  local out
+  out="$(i3-msg -t command reload 2>&1)"
+  if [[ "$out" == *'"success":true'* ]]; then
+    ok "i3 reloaded - your keys are live now"
+  else
+    warn "i3 would not reload: $out"
+    todo "reload i3 (Mod+Shift+R) - the keys do nothing until you do"
+  fi
+}
+
 step_keys() {
   step "key bindings"
   if ! have xev; then
@@ -449,13 +494,43 @@ step_keys() {
   # as chosen. A role nobody presses stays empty and gets commented out.
   local dest="${XDG_CONFIG_HOME:-$HOME/.config}/i3/talkey.conf"
   local -A code=([dictate]="" [dictate_alt]="" [memo]="" [submit]="")
-  local role prev
+  local role prev CAPS_CHOSEN=0
+
+  local i3cfg="" c
+  for c in "${XDG_CONFIG_HOME:-$HOME/.config}/i3/config" "$HOME/.i3/config"; do
+    [[ -f "$c" ]] && { i3cfg="$c"; break; }
+  done
   if [[ -f "$dest" ]]; then
     for role in dictate dictate_alt memo submit; do
       prev="$(sed -nE "s|^set \\\$key_$role ([0-9]+).*|\1|p" "$dest" | head -1)"
       [[ -n "$prev" ]] && code[$role]="$prev"
     done
     [[ -n "${code[dictate]}" ]] && info "found your current keys in $dest - press Enter at a prompt to keep one"
+  fi
+
+  # Caps Lock is the one key that is on every keyboard, reachable without
+  # moving your hand, and doing nothing anybody needs. Nothing else is
+  # universal: media keys vary, Menu is missing on laptops and Macs, Scroll
+  # Lock and Pause are absent from anything compact. So it is the only default
+  # offered, and only for dictate - submit and memo have no universal home, and
+  # inventing one would bind a key the user does have to something else.
+  local CAPS=66
+  if [[ -z "${code[dictate]}" ]]; then
+    printf '\n'
+    info "Caps Lock can be your dictate key: hold it to talk, release to type."
+    info "It is on every keyboard, and this stops it being Caps Lock."
+    local conf
+    conf="$(keycode_conflict "$CAPS" "${i3cfg:-/nonexistent}")"
+    if [[ -n "$conf" ]]; then
+      warn "something already binds Caps Lock:"
+      printf '     %s\n' "$conf"
+      info "pressing your own key below avoids the clash"
+    elif ask_yn "use Caps Lock for dictate?"; then
+      code[dictate]="$CAPS"
+      CAPS_CHOSEN=1
+      ok "dictate is Caps Lock"
+      info "it will stop capitalising - 'setxkbmap -option' with no argument undoes that"
+    fi
   fi
 
   local -A prompt=(
@@ -477,7 +552,19 @@ step_keys() {
         read -r -p "   keycode for ${prompt[$role]} [${code[$role]:-none}]: " got
         [[ "$got" =~ ^[0-9]+$ ]] || got=""
       fi
-      if [[ -n "$got" ]]; then code[$role]="$got"; break; fi
+      if [[ -n "$got" ]]; then
+        # Say so before writing it. A key that already does something else is
+        # the fault that looks most like talkey being broken - it reacts, just
+        # not the way you meant.
+        local conf
+        conf="$(keycode_conflict "$got" "${i3cfg:-/nonexistent}")"
+        if [[ -n "$conf" ]]; then
+          warn "keycode $got is already bound:"
+          printf '     %s\n' "$conf"
+          ask_yn "use it for $role anyway? (comment that line out, or it wins)" n || continue
+        fi
+        code[$role]="$got"; break
+      fi
       # Nothing pressed. Only an offer to keep if there is something to keep.
       if [[ -n "${code[$role]}" ]]; then info "kept ${code[$role]}"; break; fi
       if [[ "$role" == dictate_alt ]]; then info "left unbound - you only dictate in one language"; break; fi
@@ -512,21 +599,46 @@ step_keys() {
       write_i3_bindings "$dest" "${code[dictate]}" "${code[dictate_alt]}" \
         "${code[memo]}" "${code[submit]}" || return 1
 
-      # Written, but i3 does not read it until it is included. Checking beats
-      # printing a line and hoping: an un-included file behaves exactly like a
-      # broken install, and there is nothing to tell the two apart.
-      local i3cfg="" c
-      for c in "${XDG_CONFIG_HOME:-$HOME/.config}/i3/config" "$HOME/.i3/config"; do
-        [[ -f "$c" ]] && { i3cfg="$c"; break; }
-      done
+      # Holding Caps Lock would otherwise toggle the Lock modifier and put
+      # everything talkey types in capitals. Written into our own file so it
+      # applies for the session and is undone by removing the include.
+      if (( CAPS_CHOSEN )); then
+        printf '\n# Caps Lock is your dictate key, so stop it latching capitals.\n' >> "$dest"
+        printf '# Undo by deleting this line: it only lasts as long as the session.\n' >> "$dest"
+        printf 'exec_always --no-startup-id setxkbmap -option caps:none\n' >> "$dest"
+        ok "Caps Lock will no longer capitalise"
+      fi
+
+      # i3 does not read the file until it is included, and a file that is never
+      # included behaves exactly like a broken install - every key does nothing,
+      # with nothing to tell the two apart. So offer, rather than print a line
+      # and hope. i3's own parser gets the veto, and a rejected edit is rolled
+      # straight back.
       if [[ -n "$i3cfg" ]] && grep -qE "^[[:space:]]*include[[:space:]]+.*talkey\.conf" "$i3cfg"; then
         ok "already included from $i3cfg"
-        info "reload i3 (Mod+Shift+R) to pick up the new keycodes"
+        i3_reload
+      elif [[ -z "$i3cfg" ]]; then
+        warn "no i3 config found, so nothing can include the bindings"
+        todo "add 'include ${dest/#$HOME/\~}' to your i3 config, then reload i3"
+      elif ask_yn "add 'include ${dest/#$HOME/\~}' to $i3cfg now?"; then
+        cp -f "$i3cfg" "$i3cfg.talkey.bak"
+        printf '\n# talkey key bindings\ninclude %s\n' "$dest" >> "$i3cfg"
+        if i3 -C -c "$i3cfg" >/dev/null 2>&1; then
+          ok "added, and i3 accepts it (kept a copy at $i3cfg.talkey.bak)"
+          i3_reload
+        else
+          cp -f "$i3cfg.talkey.bak" "$i3cfg"
+          warn "i3 rejected the result, so your config was put back exactly as it was:"
+          i3 -C -c "$i3cfg.talkey.bak" >/dev/null 2>&1 \
+            && printf '     the problem is in %s\n' "$dest" \
+            || printf '     your config already had an error before talkey touched it\n'
+          todo "add 'include ${dest/#$HOME/\~}' to $i3cfg by hand, then reload i3"
+        fi
       else
-        printf '\n   %sOne line left, in %s:%s\n\n' "$B" "${i3cfg:-your i3 config}" "$R"
+        printf '\n   %sOne line left, in %s:%s\n\n' "$B" "$i3cfg" "$R"
         printf '     include %s\n\n' "${dest/#$HOME/\~}"
-        info "then reload i3 (Mod+Shift+R) - the keys do nothing until you do"
-        todo "add 'include ${dest/#$HOME/\~}' to ${i3cfg:-~/.config/i3/config}, then reload i3 (Mod+Shift+R)"
+        info "the keys do nothing until you add it, then reload i3 (Mod+Shift+R)"
+        todo "add 'include ${dest/#$HOME/\~}' to $i3cfg, then reload i3 (Mod+Shift+R)"
       fi
       ;;
     sxhkd|xbindkeys)
