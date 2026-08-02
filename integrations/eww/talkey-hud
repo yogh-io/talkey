@@ -22,9 +22,12 @@ done
 CFG="$DATA_DIR/integrations/eww"
 [[ -f "$CFG/eww.yuck" ]] || { echo "talkey-hud: no eww config at $CFG - set TALKEY_DATA_DIR" >&2; exit 1; }
 PIDFILE="$STATE_DIR/dictate.pid"
+PENDING="$STATE_DIR/dictate.pending"     # talkey holds this while it is still transcribing
+ALERT="$STATE_DIR/dictate.alert"         # talkey refused before recording; show why
 HELP_ON="$STATE_DIR/help.on"             # `talkey help` toggles this; we draw the sheet
 EWW="${TALKEY_EWW:-eww}"
-LINGER="${TALKEY_EWW_LINGER:-2.5}"       # seconds the HUD stays after recording ends
+LINGER="${TALKEY_EWW_LINGER:-2.5}"       # seconds the HUD stays after the dictation ends
+ERR_LINGER="${TALKEY_EWW_ERR_LINGER:-8}" # longer for an error: it names a command to run
 
 # Where the HUD appears. eww.yuck holds the defaults; anything set here is passed
 # to `eww open` and wins, so placement is config, not a file you have to edit.
@@ -80,6 +83,15 @@ ew_optional() { "$EWW" -c "$CFG" "$@" >/dev/null 2>&1 9>&- || true; }
 open_hud()  { ew open talkeyhud ${open_args[@]+"${open_args[@]}"}; }
 close_hud() { ew close talkeyhud; }
 
+# Recording stopping is NOT the dictation ending. The final text, the done state
+# and the confidence/silence/peak reading are all written after the recorder is
+# gone - on a CPU-only machine that transcription takes tens of seconds, far
+# longer than LINGER. So the HUD closes on talkey's pending marker, not on the
+# recorder pidfile: whichever of the two goes away last starts the linger.
+schedule_close() {
+  ( sleep "$LINGER"; [[ -f "$PIDFILE" || -f "$PENDING" ]] || close_hud ) &
+}
+
 # The cheat sheet. The labels name the keys printed on YOUR keyboard - talkey
 # binds nothing by them, they are only what the sheet says. Pushed into eww as
 # one JSON value so the widget stays a dumb renderer.
@@ -127,8 +139,9 @@ sleep 0.4
 [[ -f "$PIDFILE" ]] && open_hud
 [[ -f "$HELP_ON" ]] && open_help
 
-# Monitor the state dir; react only to the recorder pidfile. Create/appear -> show
-# now; delete/vanish -> show for a linger then close (unless a new dictation began).
+# Monitor the state dir. The recorder pidfile appearing -> show now. The pidfile
+# and the pending marker both gone -> show for a linger, then close (unless a new
+# dictation began in the meantime).
 #
 # Same two guards as ew(): 9>&- so this long-lived child never inherits the
 # single-instance lock, and a trap so it dies with us instead of being reparented
@@ -141,10 +154,20 @@ trap 'kill "$WATCH_PID" 2>/dev/null' EXIT INT TERM
 while read -r _ev fname <&8; do
   case "$fname" in
     dictate.pid)
-      if [[ -f "$PIDFILE" ]]; then
+      if [[ -f "$PIDFILE" ]]; then open_hud; else schedule_close; fi ;;
+    dictate.pending)
+      # Only the marker going away matters here - it appears while the recorder
+      # pidfile is still there, and that is what opened the HUD.
+      [[ -f "$PENDING" ]] || schedule_close ;;
+    dictate.alert)
+      # talkey refused before recording - there is no pidfile to open the window,
+      # and a message nobody can see is the same as no message. Held longer than
+      # a normal dictation: this one names a command to go and run, and two lines
+      # cannot be read in the time a finished dictation lingers.
+      if [[ -f "$ALERT" ]]; then
         open_hud
-      else
-        ( sleep "$LINGER"; [[ -f "$PIDFILE" ]] || close_hud ) &
+        ( sleep "$ERR_LINGER"; rm -f "$ALERT"
+          [[ -f "$PIDFILE" || -f "$PENDING" ]] || close_hud ) &
       fi ;;
     help.on)
       if [[ -f "$HELP_ON" ]]; then open_help; else close_help; fi ;;

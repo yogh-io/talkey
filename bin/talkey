@@ -55,6 +55,10 @@ DICTATE_PID="$STATE_DIR/dictate.pid"
 PRESSTIME="$STATE_DIR/dictate.presstime"
 MEMO_PRESSTIME="$STATE_DIR/memo.presstime"   # last Square press, mid-dictation only - for double-tap-to-restart
 PENDING="$STATE_DIR/dictate.pending"
+# Opens the HUD when there is no recording to open it. A refusal before
+# recording has no pidfile behind it, and the HUD only appears for one of those
+# - so without this the message would be written to files nobody displays.
+ALERT="$STATE_DIR/dictate.alert"
 SUBMIT_REQ="$STATE_DIR/submit.requested"
 CANCEL_REQ="$STATE_DIR/cancel.requested"
 TRANSLATE_REQ="$STATE_DIR/translate.requested"   # Square toggles this mid-dictation: stt() then asks whisper to translate to English (task=translate, which only ever outputs English - see README)
@@ -529,7 +533,28 @@ playback() {
 
 dictate_recording() { [[ -f "$DICTATE_PID" ]] && kill -0 "$(cat "$DICTATE_PID" 2>/dev/null)" 2>/dev/null; }
 
+# Refuse before recording, not after transcribing. Discovering the server is
+# missing only once the clip is ready costs the user a whole spoken sentence and
+# tells them nothing they can act on. This is one connect to loopback - a couple
+# of milliseconds when it succeeds, instant when it is refused.
+#
+# A server that is up but still loading its model is NOT this case: it accepts
+# the connection, so this passes and transcribe() handles the wait.
+preflight_ok() {
+  curl -sS --max-time 2 -o /dev/null "${WHISPER_URL%/inference}/" 2>/dev/null && return 0
+  log "preflight: nothing answers at $WHISPER_URL"
+  : > "$TRANSCRIPT"; : > "$METRICS_FILE"
+  printf 'error' > "$HEADER_FILE"
+  printf 'no speech server - run: talkey doctor' > "$TRANSCRIPT"
+  printf 'plain' > "$FOOTER_FILE"
+  : > "$ALERT"          # the HUD opens on this; nothing else would
+  notify "talkey: no speech server - run 'talkey doctor'" 5000
+  play_sound cancel
+  return 1
+}
+
 begin_dictation() {
+  preflight_ok || return 0
   rm -f "$SUBMIT_REQ" "$CANCEL_REQ" "$TRANSLATE_REQ" "$MEMO_PRESSTIME" "$PENDING"
   : > "$DIAG"   # fresh trace per dictation; talkey-diag shows the latest
   diag "==== dictate start raw=$RAW interval=${STREAM_INTERVAL}s stream_prompt=${#STREAM_PROMPT}c ===="
@@ -700,5 +725,11 @@ case "$MODE/$ACTION" in
     else : > "$HELP_ON"; log "help opened"
     fi ;;
 
-  *) echo "usage: talkey dictate|memo press|release|start|stop | talkey submit | talkey help" >&2; exit 2 ;;
+  # `talkey doctor` is the spelling people reach for; talkey-doctor is the same
+  # program. Every failure message talkey can produce names one of the two, so
+  # there is a single place to go rather than a log file nobody knew about.
+  doctor/*)
+    exec "$SCRIPT_DIR/talkey-doctor" ;;
+
+  *) echo "usage: talkey dictate|memo press|release|start|stop | talkey submit | talkey help | talkey doctor" >&2; exit 2 ;;
 esac

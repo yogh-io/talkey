@@ -278,9 +278,10 @@ The **server** stays resident as a systemd user unit, so the model is already
 warm in memory. Each dictation is a fast POST rather than a cold model load.
 
 The **HUD is a separate program**. talkey only writes state files; the eww
-adapter watches the recorder's pidfile with inotify and opens or closes the
-window on its own. State changes are event-driven - nothing sits in a loop
-asking whether anything happened. (The level meter does sample the audio at a
+adapter watches those files with inotify and opens or closes the window on its
+own: it appears when recording starts and stays until the text has been typed,
+however long the transcription takes. State changes are event-driven - nothing
+sits in a loop asking whether anything happened. (The level meter does sample the audio at a
 fixed rate while you speak, because that is what a meter is; it blocks the rest
 of the time.) Writing a
 different renderer means reading those same files, and talkey needs no changes.

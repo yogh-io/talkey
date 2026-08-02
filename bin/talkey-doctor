@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# talkey-doctor - why is talkey not working? This is the answer.
+#
+# Every failure message talkey can print ends by naming this command, so there
+# is exactly one place to go when something is wrong, and it is a command rather
+# than a log file nobody knew existed.
+#
+# It checks the whole chain in the order it has to work, stops nothing, changes
+# nothing, and for each fault prints one sentence and one command.
+#
+#   talkey-doctor           # check everything
+#   talkey-doctor --quiet   # only what is wrong (for scripts; exit 1 if any)
+#
+# Exit status is the number of faults, so `talkey-doctor >/dev/null || ...` works.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+for _l in "$SCRIPT_DIR/../lib" /usr/share/talkey/lib; do
+  [[ -f "$_l/common.sh" ]] && { . "$_l/common.sh"; break; }
+done
+[[ -n "${DATA_DIR:-}" ]] || { echo "talkey-doctor: cannot find lib/common.sh" >&2; exit 1; }
+
+QUIET=0
+[[ "${1:-}" == --quiet ]] && QUIET=1
+
+if [[ -t 1 ]]; then
+  B=$'\e[1m'; DIM=$'\e[2m'; GREEN=$'\e[32m'; RED=$'\e[31m'; YELLOW=$'\e[33m'; R=$'\e[0m'
+else
+  B=""; DIM=""; GREEN=""; RED=""; YELLOW=""; R=""
+fi
+
+FAULTS=0
+ok()   { (( QUIET )) || printf '  %s+%s %s\n' "$GREEN" "$R" "$1"; }
+note() { (( QUIET )) || printf '  %s-%s %s\n' "$DIM" "$R" "$1"; }
+# One sentence, then one command. Both required - a fault with no next step is
+# the thing this script exists to replace.
+bad()  { FAULTS=$((FAULTS+1)); printf '  %s!%s %s\n' "$RED" "$R" "$1"; printf '      %s%s%s\n' "$B" "$2" "$R"; }
+warn() { printf '  %s~%s %s\n' "$YELLOW" "$R" "$1"; [[ -n "${2:-}" ]] && printf '      %s%s%s\n' "$B" "$2" "$R"; }
+sec()  { (( QUIET )) || printf '\n%s%s%s\n' "$B" "$1" "$R"; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# --- 1. session ------------------------------------------------------------
+# First because nothing downstream matters if keystrokes cannot be delivered.
+# talkey types with xdotool, which is X11 only: under Wayland every other check
+# here can pass and still nothing reaches your window.
+sec "session"
+if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+  if [[ -n "${DISPLAY:-}" ]]; then
+    bad "this is a Wayland session. talkey types with xdotool, which only reaches X11 windows - XWayland apps may work, native ones will not." \
+        "log in on an Xorg session (choose it at your login screen)"
+  else
+    bad "this is a Wayland session with no X server at all. talkey cannot type anywhere." \
+        "log in on an Xorg session (choose it at your login screen)"
+  fi
+elif [[ -z "${DISPLAY:-}" ]]; then
+  bad "no DISPLAY - talkey needs a running X session." "start X, or run this from inside your desktop session"
+else
+  ok "X11 on $DISPLAY"
+fi
+
+# --- 2. commands -----------------------------------------------------------
+sec "programs talkey needs"
+missing=()
+for c in ffmpeg paplay xdotool xset curl; do have "$c" || missing+=("$c"); done
+hud_missing=()
+for c in eww inotifywait jq; do have "$c" || hud_missing+=("$c"); done
+if (( ${#missing[@]} )); then
+  bad "missing, and nothing works without them: ${missing[*]}" "install them, then run talkey-doctor again"
+else
+  ok "core tools present"
+fi
+if (( ${#hud_missing[@]} )); then
+  bad "the HUD cannot draw without: ${hud_missing[*]}" "install them, then: systemctl --user restart talkey-hud"
+else
+  ok "HUD tools present"
+fi
+have python3 || note "no python (optional) - the HUD shows state and the meter, but no live text"
+have notify-send || note "no libnotify (optional) - no desktop notifications"
+
+# --- 3. model --------------------------------------------------------------
+# Resolved the same way bin/talkey-whisper-server resolves it, or the two would
+# disagree about whether you have a model.
+sec "speech model"
+MODEL_NAME="${TALKEY_MODEL_NAME:-large-v3-turbo}"
+MODEL_DIR="${WHISPER_MODEL_DIR:-$HOME/.local/share/whisper}"
+model=""
+if [[ -n "${TALKEY_MODEL:-}" ]]; then
+  [[ -f "$TALKEY_MODEL" ]] && model="$TALKEY_MODEL"
+else
+  for c in "$MODEL_DIR/ggml-$MODEL_NAME.bin" "/usr/share/whisper.cpp-model-$MODEL_NAME/ggml-$MODEL_NAME.bin"; do
+    [[ -f "$c" ]] && { model="$c"; break; }
+  done
+fi
+BYO_SERVER=0
+[[ -n "${TALKEY_WHISPER_URL:-}" ]] && BYO_SERVER=1
+if (( BYO_SERVER )); then
+  note "TALKEY_WHISPER_URL is set, so the model is your server's business, not talkey's"
+elif [[ -n "$model" ]]; then
+  ok "$MODEL_NAME at $model"
+else
+  bad "no $MODEL_NAME model. The speech server exits as soon as it starts without one." \
+      "talkey-setup model"
+fi
+
+# --- 4. server -------------------------------------------------------------
+sec "speech-to-text server"
+URL="${TALKEY_WHISPER_URL:-http://${TALKEY_WHISPER_HOST:-127.0.0.1}:${TALKEY_WHISPER_PORT:-8910}/inference}"
+BASE="${URL%/inference}"
+UNIT=talkey-whisper.service
+if curl -sS --max-time 3 -o /dev/null "$BASE/" 2>/dev/null; then
+  ok "answering at $BASE"
+elif (( BYO_SERVER )); then
+  bad "nothing answers at $BASE, which is where TALKEY_WHISPER_URL points." \
+      "start your whisper server, or correct TALKEY_WHISPER_URL in ${TALKEY_CONFIG/#$HOME/\~}"
+elif ! have systemctl; then
+  bad "nothing answers at $BASE and there is no systemd here." "start it yourself: talkey-whisper-server"
+elif ! systemctl --user cat "$UNIT" >/dev/null 2>&1; then
+  bad "nothing answers at $BASE, and $UNIT is not installed." \
+      "from a checkout: setup/install.sh"
+elif systemctl --user is-active --quiet "$UNIT"; then
+  # Running but not answering usually means it is still loading a large model.
+  warn "$UNIT is running but not answering yet - a 1.6GB model takes tens of seconds to load from cold." \
+       "wait, then run talkey-doctor again"
+else
+  bad "nothing answers at $BASE. $UNIT is not running - its last words were:" \
+      "systemctl --user enable --now $UNIT"
+  journalctl --user -u "$UNIT" -n 3 --no-pager -o cat 2>/dev/null | sed 's/^/        /'
+fi
+
+# --- 5. key bindings -------------------------------------------------------
+# A bindings file that is never included behaves exactly like a broken install:
+# every key does nothing, and there is nothing to tell the two apart.
+sec "key bindings"
+BIND="${XDG_CONFIG_HOME:-$HOME/.config}/i3/talkey.conf"
+i3cfg=""
+for c in "${XDG_CONFIG_HOME:-$HOME/.config}/i3/config" "$HOME/.i3/config"; do
+  [[ -f "$c" ]] && { i3cfg="$c"; break; }
+done
+if pgrep -x i3 >/dev/null 2>&1; then
+  if [[ ! -f "$BIND" ]]; then
+    bad "i3 is running but there is no $BIND, so no key is bound to talkey." "talkey-setup keys"
+  elif [[ -z "$i3cfg" ]]; then
+    warn "found $BIND but no i3 config to include it from." "talkey-setup keys"
+  elif grep -qE "^[[:space:]]*include[[:space:]]+.*talkey\.conf" "$i3cfg"; then
+    ok "included from $i3cfg"
+    d="$(sed -nE 's|^set \$key_dictate ([0-9]+).*|\1|p' "$BIND" | head -1)"
+    [[ -n "$d" ]] && ok "dictate is keycode $d" \
+      || bad "no dictate key is set in $BIND." "talkey-setup keys"
+  else
+    bad "$BIND exists but $i3cfg never includes it, so i3 has not loaded a single talkey binding." \
+        "add this line to $i3cfg, then reload i3 (Mod+Shift+R):  include ${BIND/#$HOME/\~}"
+  fi
+else
+  note "i3 is not running - if you use sxhkd or xbindkeys, check that daemon's config"
+  [[ -f "$BIND" ]] && note "a bindings file exists at $BIND"
+fi
+
+# --- 6. helpers ------------------------------------------------------------
+sec "background helpers"
+if pgrep -f '(^|/)talkey-hud' >/dev/null 2>&1; then
+  ok "talkey-hud is running (the HUD)"
+else
+  bad "talkey-hud is not running, so no HUD will ever appear." \
+      "systemctl --user start talkey-hud   (or reload i3, which starts it)"
+fi
+HUD_LOG="$STATE_DIR/hud.log"
+[[ -s "$HUD_LOG" ]] && note "the HUD has logged problems: tail -n 20 $HUD_LOG"
+if pgrep -f '(^|/)talkey-norepeat' >/dev/null 2>&1; then
+  ok "talkey-norepeat is running (keeps a held key from repeating)"
+else
+  warn "talkey-norepeat is not running - a held key may fire its binding over and over." \
+       "systemctl --user start talkey-norepeat   (or reload i3)"
+fi
+
+# --- 7. microphone ---------------------------------------------------------
+# The default source being wrong is the most common first-run fault, and it
+# looks exactly like "it did not hear me".
+sec "microphone"
+if ! have pactl; then
+  note "no pactl, cannot check the microphone"
+else
+  src="$(pactl get-default-source 2>/dev/null)"
+  if [[ -z "$src" ]]; then
+    bad "no sound server is answering, so nothing can be recorded." "start pipewire-pulse or pulseaudio"
+  elif [[ "$src" == *.monitor ]]; then
+    bad "the default source is '$src' - that records your speakers, not your voice." \
+        "pactl list sources short   then set TALKEY_SOURCE in ${TALKEY_CONFIG/#$HOME/\~}"
+  else
+    mute="$(pactl get-source-mute "$src" 2>/dev/null)"
+    if [[ "$mute" == *yes* ]]; then
+      bad "the microphone '$src' is muted." "pactl set-source-mute $src 0"
+    else
+      ok "$src"
+      note "levels too low or too high? run talkey-mic-check"
+    fi
+  fi
+fi
+
+# --- verdict ---------------------------------------------------------------
+printf '\n'
+if (( FAULTS == 0 )); then
+  printf '%sready.%s hold your dictate key, speak, release.\n' "$B" "$R"
+else
+  printf '%s%d problem%s above.%s Fix them top to bottom - the later ones often clear up on their own.\n' \
+    "$B" "$FAULTS" "$( (( FAULTS == 1 )) || printf s )" "$R"
+fi
+exit "$FAULTS"

@@ -71,6 +71,7 @@ package() {
   install -Dm755 -t "$pkgdir/usr/bin" \
     bin/talkey \
     bin/talkey-setup \
+    bin/talkey-doctor \
     bin/talkey-diag \
     bin/talkey-mic-check \
     bin/talkey-replay \

@@ -52,6 +52,9 @@ $sans: "Cantarell", "Noto Sans", "DejaVu Sans", sans-serif;
 .state-done         { color: $good; } .hud-dot.state-done         { color: $good; }
 .state-cancelled    { color: $loud; } .hud-dot.state-cancelled    { color: $loud; }
 .state-nospeech     { color: $silence; } .hud-dot.state-nospeech   { color: $silence; }
+// Without this ERROR drew in the same ink as the rest of the line - the one
+// state that has to be unmissable was the one that looked like every other.
+.state-error        { color: $loud; } .hud-dot.state-error      { color: $loud; }
 .hud-time { font-family: $mono; font-size: 15px; color: $ink-dim; }
 .hud-time.long { color: $work; }
 
