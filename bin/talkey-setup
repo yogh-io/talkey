@@ -687,6 +687,7 @@ main() {
     local i=1 t
     for t in "${TODO[@]}"; do printf '  %d) %s\n' "$i" "$t"; i=$((i+1)); done
     printf '\nthen run talkey-setup again - it checks every one of these.\n'
+    printf 'stuck? %stalkey doctor%s checks the whole chain and says what to do.\n' "$B" "$R"
     printf 'settings live in %s\n' "$cfg"
     return 1
   fi

@@ -10,6 +10,13 @@ keycode is ever typed by hand:
 It installs nothing on your behalf. Safe to re-run, and `talkey-setup keys`
 rebinds whenever you like.
 
+If anything is ever wrong, one command tells you what and how to fix it:
+
+  talkey doctor
+
+Note talkey types with xdotool, which is X11 only - on Wayland nothing arrives
+in your window. `talkey doctor` says so plainly.
+
 Rather do it by hand? Every step is in /usr/share/doc/talkey-git/README.md.
 EOF
 }

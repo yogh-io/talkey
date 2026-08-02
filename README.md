@@ -151,12 +151,22 @@ and writes the file. The manual route, if you would rather:
 
 4. Reload i3 with `Mod+Shift+R`. Hold your dictate key, say something, release.
 
-Either way, step 3 is yours to do: `talkey-setup` writes its own file and prints
-the `include` line, but never edits your i3 config.
+`talkey-setup` offers to add step 3 for you. It keeps a `.bak`, and i3's own
+parser gets the veto - if i3 would reject the result your config is restored
+exactly as it was. Say no and it prints the line for you to add yourself.
 
-The defaults are a Keychron K10's media keys, which is simply what this was
-written on. Any four keys work - the ones that suit this best are keys you do
-not otherwise use, within reach of a resting hand.
+It also checks that the key you picked is not already bound to something else,
+including in files your config `include`s, and names the file and line if it is.
+
+Setup offers **Caps Lock** for dictate. It is the one key on every keyboard that
+is reachable without moving your hand and does nothing anybody needs, so it is
+the only default talkey suggests - and it stops being Caps Lock while talkey is
+set up (`setxkbmap -option` with no argument undoes that).
+
+Any key works. The ones that suit this best are keys you do not otherwise use,
+within reach of a resting hand. Submit and memo have no default, because no key
+is free on every keyboard and binding one you *do* use would be worse than
+leaving it to you.
 
 ### Requirements
 
@@ -367,8 +377,25 @@ start if it finds one owned by somebody else.
 
 ## Troubleshooting
 
+**Start here:**
+
+```bash
+talkey doctor
+```
+
+It checks the whole chain in the order it has to work - X11 or Wayland, the
+programs talkey needs, the model, the speech server, whether a key is bound and
+whether i3 actually loaded it, the background helpers, and your microphone. For
+anything wrong it prints one sentence and one command. It changes nothing.
+
+Every error talkey can show you names it, so you never have to know which log to
+read.
+
+Then, if you want the detail:
+
 ```bash
 tail -f "${XDG_RUNTIME_DIR:-/tmp}/talkey/log"   # what talkey is doing
+tail -n 20 "${XDG_RUNTIME_DIR:-/tmp}/talkey/hud.log"  # why the HUD did not appear
 systemctl --user status talkey-whisper          # the speech-to-text server
 journalctl --user -u talkey-whisper -f          # its logs
 talkey-diag                                     # the last dictation's live-path trace
