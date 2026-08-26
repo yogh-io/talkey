@@ -18,10 +18,12 @@
 #     tool names, odd acronyms). It already spells "TypeScript", "Kubernetes"
 #     etc. fine, and a growing term list just drifts back toward the word-list.
 #   * Keep it SHORT - only the last ~224 tokens are used.
-#   * Even well-formed, a prompt can subtly drop/alter a word once a dictation
-#     crosses whisper's ~30s stitching window (a "not" was dropped on a 43s
-#     clip, flipping the meaning). That is why talkey caps it at TALKEY_VOCAB_MAX_S:
-#     short commands get the jargon fix; long-form dictation stays raw and safe.
+#   * Even well-formed, a prompt is carried as context through the WHOLE clip,
+#     so the more speech it is applied to the more words it can quietly reword
+#     ("worktree select box" came back as "worktrees like box"). That is why
+#     talkey caps it at TALKEY_VOCAB_MAX_S: short commands get the jargon fix;
+#     long-form dictation stays raw and safe. Clip LENGTH is not the problem -
+#     whisper handles any length; see "long dictations" in the README.
 # Lines starting with # are ignored.
 
 # Replace the example below with your own two or three sentences: the way you
