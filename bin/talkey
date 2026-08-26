@@ -19,7 +19,11 @@
 # Context:    an initial prompt (vocabulary.txt) biases whisper toward your terms.
 set -euo pipefail
 
-MODE="${1:?usage: talkey dictate|dictate-alt|memo press|release|start|stop | talkey submit}"
+# One usage line, used by both the no-argument case here and the unknown-mode
+# case at the bottom - two hand-written copies had already drifted apart, each
+# missing a different mode.
+USAGE="usage: talkey dictate|dictate-alt|memo press|release|start|stop | talkey submit | talkey help | talkey doctor"
+MODE="${1:?$USAGE}"
 ACTION="${2:-}"
 
 # `dictate-alt` is a dictation in your second language. It is the SAME dictation
@@ -743,5 +747,5 @@ case "$MODE/$ACTION" in
   doctor/*)
     exec "$SCRIPT_DIR/talkey-doctor" ;;
 
-  *) echo "usage: talkey dictate|memo press|release|start|stop | talkey submit | talkey help | talkey doctor" >&2; exit 2 ;;
+  *) echo "$USAGE" >&2; exit 2 ;;
 esac
