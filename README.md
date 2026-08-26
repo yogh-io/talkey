@@ -64,6 +64,12 @@ HUD shows what is currently pending.
 
 **Help** - a cheat sheet of your own bindings, in a floating window.
 
+![the cheat sheet](docs/screenshots/help.png)
+
+The rows are named by role out of the box. Set `TALKEY_LABEL_*` in
+`talkey.env` and they read as the keys printed on your own keyboard instead -
+the sheet is the one place that knows what you bound.
+
 Start, stop and submit each play a short tone, so you know the state without
 looking.
 
