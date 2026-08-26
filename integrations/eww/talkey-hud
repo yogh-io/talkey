@@ -81,7 +81,15 @@ ew() {
 # `eww kill` with no daemon running is a normal outcome, not a fault.
 ew_optional() { "$EWW" -c "$CFG" "$@" >/dev/null 2>&1 9>&- || true; }
 open_hud()  { ew open talkeyhud ${open_args[@]+"${open_args[@]}"}; }
-close_hud() { ew close talkeyhud; }
+# Closing a window that is already closed is a NORMAL outcome here, not a fault:
+# the recorder pidfile and the pending marker each schedule a close when they go
+# away, and the alert path runs a third on its own timer, so on a plain dictation
+# one of them always arrives to find nothing left to close. It goes through
+# ew_optional, like `eww kill` with no daemon - logging it filled hud.log with
+# hundreds of lines about healthy dictations, which then read as "the HUD has
+# logged problems" in talkey doctor. Nothing is hidden by staying quiet: a close
+# that really fails leaves an always-on-top window sitting on your screen.
+close_hud() { ew_optional close talkeyhud; }
 
 # Recording stopping is NOT the dictation ending. The final text, the done state
 # and the confidence/silence/peak reading are all written after the recorder is
