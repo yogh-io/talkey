@@ -2,7 +2,14 @@
 
 The source of truth for the `talkey-git` AUR package. The AUR repo is a separate
 git repo that holds only these files, at its root - it is not a checkout of this
-one.
+one. Clone it with:
+
+```bash
+git clone ssh://aur@aur.archlinux.org/talkey-git.git ~/gitRepos/talkey-git
+```
+
+The AUR accepts pushes to `master` and no other branch, so a fresh clone whose
+`init.defaultBranch` is `main` needs renaming before the first push.
 
 ## Layout note
 
@@ -15,8 +22,8 @@ Arch expects.
 ## Publishing an update
 
 ```bash
-cd ~/aur-talkey                     # the AUR clone, on branch master
-cp /path/to/talkey/packaging/aur/{PKGBUILD,talkey-git.install} .
+cd ~/gitRepos/talkey-git            # the AUR clone, on branch master
+cp ~/gitRepos/talkey/packaging/aur/{PKGBUILD,talkey-git.install} .
 makepkg -f                          # rewrites pkgver= from the clone
 makepkg --printsrcinfo > .SRCINFO   # must be regenerated after that
 git add PKGBUILD .SRCINFO talkey-git.install
