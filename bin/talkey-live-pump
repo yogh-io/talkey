@@ -25,10 +25,10 @@ URL      = os.environ.get("TALKEY_WHISPER_URL", "http://127.0.0.1:8910/inference
 LANG     = os.environ.get("TALKEY_LANG", "en")
 INTERVAL = float(os.environ.get("TALKEY_STREAM_INTERVAL", "0.35"))
 # Stop re-transcribing once the buffer passes this many seconds. Each pass re-runs
-# whisper on the WHOLE buffer, so cost grows with length; past a minute the live
-# view is degraded anyway (whisper's 30s window) and the churn is pure load. The
-# final transcript talkey makes on release is still complete - this only pauses the
-# live preview, and is a second backstop to talkey's hard recording cap.
+# whisper on the WHOLE buffer, so cost grows with length, and past a minute a pass
+# no longer finishes inside the commit cadence - the churn is pure load. The final
+# transcript talkey makes on release is still complete, at any length - this only
+# pauses the live preview, and is a second backstop to talkey's hard recording cap.
 MAX_PUMP_S = float(os.environ.get("TALKEY_MAX_PUMP_S", "60"))
 BASE_PROMPT = os.environ.get("TALKEY_PROMPT", "")
 DEBUG    = os.environ.get("TALKEY_STREAM_DEBUG", "0") == "1"

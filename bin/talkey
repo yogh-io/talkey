@@ -333,7 +333,12 @@ stt() {
       log "translate unavailable: whisper-cli=${WHISPER_CLI:-none} model=${TRANSLATE_MODEL:-none}"
       return 1
     fi
-    text="$("$WHISPER_CLI" -m "$TRANSLATE_MODEL" -l "$LANG_CODE" -tr -nt -f "$wav" 2>>"$STATE_DIR/log")" || return 1
+    # No -nt here either, for the same reason the server does not get it: it stops
+    # whisper seeking by sentence and starts it cutting blind every 30 seconds. It
+    # only ever bought us tidier output, and the [00:00:00.000 --> …] prefixes it
+    # would have hidden are stripped below anyway, by the same sed that strips
+    # [BLANK_AUDIO].
+    text="$("$WHISPER_CLI" -m "$TRANSLATE_MODEL" -l "$LANG_CODE" -tr -f "$wav" 2>>"$STATE_DIR/log")" || return 1
     printf '%s %s %s' none "$sil" "$peak" > "$STT_METRICS"
   else
     # TRANSCRIBE: the warm large-v3-turbo server over HTTP.
@@ -358,10 +363,10 @@ stt() {
     fi
     printf '%s %s %s' "${alp:-none}" "$sil" "$peak" > "$STT_METRICS"
   fi
-  # Flatten newlines to spaces FIRST (tr): whisper-cli's translate output leads
-  # with a newline and puts each segment on its own line - left in, that leading
-  # newline types as a phantom Enter before the text. The server path is already
-  # single-line, so tr is a no-op there. Then strip whisper's non-speech
+  # Flatten newlines to spaces FIRST (tr): both paths put each segment on its own
+  # line, and whisper-cli's translate output leads with one - left in, that
+  # leading newline types as a phantom Enter before the text, and every sentence
+  # break in a long dictation types as an Enter too. Then strip whisper's non-speech
   # annotations - [BLANK_AUDIO]/[Music] bracket style AND the *sad music* /
   # *coughing* asterisk style large-v3 emits on non-speech (that leaked into the
   # typed text) - and trim/collapse whitespace.

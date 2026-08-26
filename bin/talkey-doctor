@@ -110,6 +110,34 @@ BASE="${URL%/inference}"
 UNIT=talkey-whisper.service
 if curl -sS --max-time 3 -o /dev/null "$BASE/" 2>/dev/null; then
   ok "answering at $BASE"
+  # A server started with --no-timestamps cuts the audio into fixed 30 second
+  # blocks and loses whatever straddles a cut. Nothing in the output says so -
+  # the text just comes back a clause short - so it has to be named here. Nearly
+  # always this is a server still running from before talkey stopped passing it.
+  #
+  # Only the server talkey actually posts to, matched by its port, or the advice
+  # would name the wrong process. Read each candidate's own /proc cmdline rather
+  # than grepping `pgrep -f` output, which matches any command LINE containing
+  # the string - including the shell running this check.
+  nt=0
+  port="${BASE##*:}"
+  if have pgrep && [[ "$port" =~ ^[0-9]+$ ]] && [[ "$BASE" == *//127.0.0.1:* || "$BASE" == *//localhost:* ]]; then
+    for p in $(pgrep -x -u "$(id -u)" whisper-server 2>/dev/null); do
+      [[ -r "/proc/$p/cmdline" ]] || continue
+      cmd=" $(tr '\0' ' ' < "/proc/$p/cmdline")"
+      [[ "$cmd" == *" $port "* ]] || continue
+      [[ "$cmd" =~ ( )(-nt|--no-timestamps)( |$) ]] && { nt=1; break; }
+    done
+  fi
+  if (( nt )); then
+    if (( BYO_SERVER )); then
+      warn "your whisper server runs with --no-timestamps, so it cuts audio into 30 second blocks and drops words at every cut." \
+           "restart it without that flag"
+    else
+      warn "the running speech server still has --no-timestamps, so it drops words every 30 seconds. It predates the fix." \
+           "systemctl --user restart $UNIT"
+    fi
+  fi
 elif (( BYO_SERVER )); then
   bad "nothing answers at $BASE, which is where TALKEY_WHISPER_URL points." \
       "start your whisper server, or correct TALKEY_WHISPER_URL in ${TALKEY_CONFIG/#$HOME/\~}"

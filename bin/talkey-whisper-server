@@ -56,4 +56,18 @@ fi
 # Say what was picked. "why is it slow" is nearly always the CPU build being
 # used when a GPU build exists, and this is the one place that knows.
 echo "talkey: whisper-server=$BIN model=$MODEL threads=$THREADS" >&2
-exec "$BIN" --model "$MODEL" --host "$HOST" --port "$PORT" --threads "$THREADS" --no-timestamps
+# NEVER pass --no-timestamps. It reads like a formatting flag ("do not print
+# timestamps") but it changes decoding: with no timestamp tokens whisper cannot
+# tell where the last sentence ended, so it stops advancing to that point and
+# hard-cuts the audio into fixed 30 second blocks instead. Whatever you were
+# saying across a cut is mangled or lost - measured on real dictations, every
+# clip over 30s lost a clause at each boundary ("I move the mouse to another
+# window" simply vanished). Leaving it off makes whisper seek by sentence, which
+# is what lets it transcribe input of any length. See README, "long dictations".
+#
+# Cost of leaving it off: whisper now also splits segments at --max-len
+# characters, and whisper-server forces that to 60 when unset - which without
+# --split-on-word can cut mid-word. So set both: split on words, and a limit
+# long enough that natural sentence boundaries decide instead.
+exec "$BIN" --model "$MODEL" --host "$HOST" --port "$PORT" --threads "$THREADS" \
+     --split-on-word --max-len 1000

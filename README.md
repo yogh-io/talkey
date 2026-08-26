@@ -237,7 +237,7 @@ The most useful settings:
 | `TALKEY_OLLAMA_MODEL` | `qwen2.5:3b` | which Ollama model writes the name - it must be pulled |
 | `TALKEY_OLLAMA_URL` | `http://localhost:11434/api/generate` | where Ollama is |
 | `TALKEY_HOLD_MS` | `450` | longer press than this counts as hold, shorter as a tap |
-| `TALKEY_MAX_REC_S` | `120` | hard cap on one recording, so a stuck key cannot run away |
+| `TALKEY_MAX_REC_S` | `120` | hard cap on one recording, so a stuck key cannot run away - raise it for long-form |
 
 See [`config/talkey.env.example`](config/talkey.env.example) for the complete
 list, including HUD geometry, meter thresholds, external tool paths and the
@@ -300,6 +300,35 @@ X11 **auto-repeat** is switched off for the bound keycodes, so holding a key is
 one clean press and release rather than a machine-gun of events. A small watcher
 reapplies that whenever a keyboard re-enumerates, because X quietly turns it
 back on after a reconnect or a suspend.
+
+### Long dictations
+
+whisper only ever looks at 30 seconds of audio at a time. Longer input is not a
+problem for it: after each window it moves forward to where the last sentence
+ended and takes the next 30 seconds from there, so sentences are never cut in
+half and a clip of any length comes back whole.
+
+That only works if whisper is allowed to emit timestamps, because the timestamps
+are how it knows where the sentence ended. `--no-timestamps` reads like a
+formatting flag and is not one: with it, whisper has no boundary to seek to, so
+it steps forward a blind 30 seconds each time and whatever straddles the cut is
+mangled or lost. Nothing reports this - the text simply comes back a clause
+short. On real dictations of 45 to 90 seconds it cost a phrase at every
+boundary, once an entire "I move the mouse to another window" that the rest of
+the sentence depended on.
+
+So `talkey-whisper-server` does not pass it, and `talkey doctor` says so if the
+server you are running does.
+
+The practical limits are elsewhere, and both are yours to set:
+
+- `TALKEY_MAX_REC_S` (default 120) stops the recording itself, so a stuck key
+  cannot run away. Raise it for long-form dictation.
+- `TALKEY_MAX_PUMP_S` (default 60) only pauses the **live preview**, whose cost
+  grows with the buffer. The final transcript is unaffected and stays complete.
+
+The wait for the final transcript scales with the clip rather than being capped,
+so a long dictation on a CPU-only build is slow but never gives up early.
 
 ## Microphone level
 
@@ -421,6 +450,15 @@ looking at.
 
 **Transcripts contain "thank you" or "thanks for watching".** That is whisper
 hallucinating over near-silence. Your level is too low: run `talkey-mic-check`.
+
+**A long dictation is missing a phrase every 30 seconds.** The speech server is
+running with `--no-timestamps`, which makes it cut the audio into blind 30 second
+blocks. If it is talkey's own server, it is one left over from before this was
+fixed: `systemctl --user restart talkey-whisper`. See
+[long dictations](#long-dictations).
+
+**A long dictation stops after two minutes.** That is `TALKEY_MAX_REC_S`, the cap
+on the recording, not on whisper. Raise it.
 
 **A held key machine-guns.** X re-enabled auto-repeat, usually after a keyboard
 reconnect or a suspend. `talkey-norepeat` should be running to catch that;
