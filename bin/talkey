@@ -103,10 +103,12 @@ VOCAB_PROMPT="${TALKEY_VOCAB_PROMPT:-1}"       # 1 = bias the final transcriptio
                                               # accepts a natural-context prompt without the sentence
                                               # drops the small model suffered - but the bias is still
                                               # applied only to SHORT dictations (see VOCAB_MAX_S / stt()).
-VOCAB_MAX_S="${TALKEY_VOCAB_MAX_S:-28}"        # only bias dictations shorter than this many seconds. Even
-                                              # on turbo a prompt can subtly drop a word past whisper's
-                                              # 30s stitching window (a "not" was dropped on a 43s clip,
-                                              # flipping the meaning), so long-form stays raw and safe.
+VOCAB_MAX_S="${TALKEY_VOCAB_MAX_S:-28}"        # only bias dictations shorter than this many seconds. A prompt
+                                              # is carried as context through the whole clip, so the longer
+                                              # the clip the more words it can quietly reword ("worktree
+                                              # select" came back as "worktrees like"). Length itself is no
+                                              # longer a problem - see talkey-whisper-server - but the bias
+                                              # still is, so long-form stays raw and safe.
 CONF_WARN="${TALKEY_CONF_WARN:-70}"            # overlay turns the confidence line amber below this percent.
                                               # Kept low on purpose: confidence tracks self-assurance and
                                               # clip length more than correctness, so amber is reserved for
@@ -350,10 +352,10 @@ stt() {
     local -a args=(-sS --max-time $(( 30 + secs * 5 ))
                    -F "file=@$wav" -F temperature=0 -F "language=$LANG_CODE")
     # The prompt is a STYLE bias, not a forced dictionary: it fixes jargon spelling
-    # (SonarQube, Jira, worktree) but can also subtly drop/alter a word, and that
-    # risk grows past whisper's 30s stitching window (proven: a "not" dropped on a
-    # 43s clip, flipping the meaning). So bias only SHORT English dictations, where
-    # turbo applies it cleanly; long-form and non-English stay raw. See VOCAB_MAX_S.
+    # (SonarQube, Jira, worktree) but can also subtly drop/alter a word, and the
+    # more speech it is carried across the more chances it has to. So bias only
+    # SHORT English dictations, where turbo applies it cleanly; long-form and
+    # non-English stay raw. See VOCAB_MAX_S.
     [[ "$VOCAB_PROMPT" == "1" && -n "$PROMPT" && "$LANG_CODE" == "en" && "$secs" -lt "$VOCAB_MAX_S" ]] && use_prompt=1
     (( use_prompt )) && args+=(-F "prompt=$PROMPT")
     # verbose_json carries avg_logprob but needs jq to parse. Without jq, fall back

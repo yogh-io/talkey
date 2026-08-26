@@ -367,9 +367,11 @@ Two things matter, both learned the hard way:
   "Kubernetes" correctly. A growing list drifts back toward being a word list.
 
 The prompt is applied only to dictations shorter than `TALKEY_VOCAB_MAX_S`
-(default 28 seconds). Past whisper's ~30 second stitching window a prompt can
-subtly alter a word - a "not" was dropped from a 43 second clip, reversing the
-meaning - so long-form dictation is left raw.
+(default 28 seconds). A prompt is carried as context through the whole clip, so
+the more speech it is applied to the more words it can quietly reword - a
+"worktree select box" came back as "worktrees like box" - and long-form
+dictation is left raw. Length itself is no longer the issue: see
+[long dictations](#long-dictations).
 
 ## Privacy: what is stored, and where
 
