@@ -243,7 +243,7 @@ The most useful settings:
 | `TALKEY_OLLAMA_MODEL` | `qwen2.5:3b` | which Ollama model writes the name - it must be pulled |
 | `TALKEY_OLLAMA_URL` | `http://localhost:11434/api/generate` | where Ollama is |
 | `TALKEY_HOLD_MS` | `450` | longer press than this counts as hold, shorter as a tap |
-| `TALKEY_MAX_REC_S` | `120` | hard cap on one recording, so a stuck key cannot run away - raise it for long-form |
+| `TALKEY_MAX_REC_S` | `900` | hard cap on one recording, so a stuck key cannot run away |
 
 See [`config/talkey.env.example`](config/talkey.env.example) for the complete
 list, including HUD geometry, meter thresholds, external tool paths and the
@@ -328,8 +328,9 @@ server you are running does.
 
 The practical limits are elsewhere, and both are yours to set:
 
-- `TALKEY_MAX_REC_S` (default 120) stops the recording itself, so a stuck key
-  cannot run away. Raise it for long-form dictation.
+- `TALKEY_MAX_REC_S` (default 900) stops the recording itself, so a stuck key
+  cannot run away. Reaching it does not lose the take: the recording ends there,
+  and finishing as usual transcribes and types what was captured.
 - `TALKEY_MAX_PUMP_S` (default 60) only pauses the **live preview**, whose cost
   grows with the buffer. The final transcript is unaffected and stays complete.
 
@@ -465,8 +466,10 @@ blocks. If it is talkey's own server, it is one left over from before this was
 fixed: `systemctl --user restart talkey-whisper`. See
 [long dictations](#long-dictations).
 
-**A long dictation stops after two minutes.** That is `TALKEY_MAX_REC_S`, the cap
-on the recording, not on whisper. Raise it.
+**A long dictation stopped before I did.** It reached `TALKEY_MAX_REC_S`, the cap
+on the recording - fifteen minutes, and not a whisper limit. Nothing is lost:
+finish the dictation as usual and everything up to the cap is transcribed and
+typed. Raise it if you really do speak for longer.
 
 **A held key machine-guns.** X re-enabled auto-repeat, usually after a keyboard
 reconnect or a suspend. `talkey-norepeat` should be running to catch that;

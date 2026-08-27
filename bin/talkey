@@ -142,12 +142,15 @@ STREAM_PROMPT="${TALKEY_STREAM_PROMPT:-}"      # bias for the LIVE pump only; em
                                               # full vocabulary ($PROMPT), so inserted text stays accurate.
 HOLD_MS="${TALKEY_HOLD_MS:-450}"               # press longer than this = hold; shorter = toggle
 DOUBLE_TAP_MS="${TALKEY_DOUBLE_TAP_MS:-400}"   # two Square presses this close, mid-dictation, = restart
-MAX_REC_S="${TALKEY_MAX_REC_S:-120}"           # HARD cap on one recording's length. ffmpeg self-stops here even
-                                              # if the key-release event is lost (X grab dropped, talkey killed) -
-                                              # without it a stuck key records for minutes and the live pump
-                                              # re-transcribes that ever-growing buffer until every core pegs and
-                                              # the machine freezes. No legit dictation runs this long; the cap
-                                              # is the safety net, not a usage limit.
+MAX_REC_S="${TALKEY_MAX_REC_S:-900}"           # HARD cap on one recording's length. ffmpeg self-stops here even
+                                              # if the key-release event is lost (X grab dropped, talkey killed), so
+                                              # a stuck key stops at fifteen minutes instead of filling memory for as
+                                              # long as the machine is up. It is a stuck-key backstop, not a usage
+                                              # limit: long dictations are the point of talkey. The runaway CPU cost
+                                              # this used to guard against is handled where it belongs - the live
+                                              # pump stops re-transcribing at MAX_PUMP_S (60s), and past that the
+                                              # buffer is just bytes arriving at 32KB/s. Reaching the cap no longer
+                                              # loses the take either; see dictate_recording.
 # Your own vocabulary wins over the shipped example, which is read-only and
 # replaced on upgrade when talkey came from a package.
 PROMPT_FILE="${TALKEY_PROMPT_FILE:-}"
@@ -240,8 +243,10 @@ archive_audio() {
   [[ "$ARCHIVE" == "1" && -s "$RAW" ]] || return 0
   mkdir -p "$ARCHIVE_DIR"
   local ts; ts="$(date +%Y%m%d-%H%M%S)"
-  local out="$ARCHIVE_DIR/${MODE}-${ts}.wav"
-  [[ -e "$out" ]] && out="$ARCHIVE_DIR/${MODE}-${ts}-$$.wav"   # avoid same-second clash
+  # Never land on a name that is already here. Two takes can finish inside the
+  # same second, and for a recording this directory is the only copy there is.
+  local out="$ARCHIVE_DIR/${MODE}-${ts}.wav" n=1
+  while [[ -e "$out" ]]; do out="$ARCHIVE_DIR/${MODE}-${ts}-${n}.wav"; n=$((n+1)); done
   wrap_wav "$RAW" "$out" || return 0
   log "archived ${out##*/}"
   local text="${1:-}"
@@ -478,6 +483,18 @@ stop_pump() {
   for _ in $(seq 1 100); do kill -0 "$p" 2>/dev/null || break; sleep 0.01; done
 }
 
+# Archive a take nobody finished, so starting the next recording cannot destroy
+# it. Deliberately not transcribed or typed: a new dictation is starting, and the
+# old one's text landing in the user's window mid-sentence would be worse than
+# the wait. It is in the archive, playable with talkey-replay.
+rescue_take() {
+  local raw="$1" saved="$STATE_DIR/$MODE.rescued-$$.raw"
+  [[ -s "$raw" ]] || return 0
+  mv -f "$raw" "$saved" 2>/dev/null || return 0
+  log "unfinished take kept, not overwritten"
+  ( RAW="$saved"; archive_audio; rm -f "$saved" ) &
+}
+
 record_start() {
   local raw="${1:-$RAW}" pidfile="${2:-$PIDFILE}" mode="${3:-$MODE}"
   if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
@@ -487,6 +504,11 @@ record_start() {
   # its own - it hit the MAX_REC_S cap, or was killed. Clear it, or the renderer
   # would keep showing a dictation that ended.
   [[ -f "$pidfile" ]] && { log "clearing stale recorder pidfile"; rm -f "$pidfile"; }
+  # Audio still sitting in $raw belongs to a take nobody finished, and truncating
+  # is the one thing that makes it unrecoverable. Every deliberate discard
+  # (cancel, restart) deletes this file itself, so whatever is left here is an
+  # accident - keep it.
+  rescue_take "$raw"
   : > "$raw"
   # stdout (piped to file) flushes continuously; a direct file output would stay
   # buffered and the live pump would see an empty file.
@@ -506,7 +528,8 @@ record_stop() {
   # MAX_REC_S cap, a kill -9, a crash), and by then the number may belong to
   # something else entirely.
   if [[ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" != "${FFMPEG##*/}" ]]; then
-    log "recorder $pid already gone"
+    log "recorder $pid already gone (MAX_REC_S cap, or killed) - finishing what it captured"
+    notify "recording stopped early - typing what was captured" 2500
   else
     kill -INT "$pid" 2>/dev/null || true   # SIGINT: graceful flush of the last audio
   fi
@@ -547,7 +570,20 @@ playback() {
   "$PLAYER" "$WAV" 2>>"$STATE_DIR/log" || log "playback failed - is a PulseAudio server running?"
 }
 
-dictate_recording() { [[ -f "$DICTATE_PID" ]] && kill -0 "$(cat "$DICTATE_PID" 2>/dev/null)" 2>/dev/null; }
+# True while a dictation is unfinished - from the first press until
+# finish_dictation runs. Usually that means ffmpeg is still recording, but it
+# also self-stops at MAX_REC_S with a whole take still waiting to be
+# transcribed. The pidfile, not the process, is what says a take is unfinished:
+# keyed off the process, the finishing press found no dictation to end, so the
+# audio was never transcribed and the next recording overwrote it.
+# Bounded by the press time, because a pidfile left behind by a killed talkey
+# must not type a take from hours ago into whatever window is focused now.
+dictate_recording() {
+  [[ -f "$DICTATE_PID" ]] || return 1
+  kill -0 "$(cat "$DICTATE_PID" 2>/dev/null)" 2>/dev/null && return 0
+  local pt; pt="$(cat "$PRESSTIME" 2>/dev/null || echo 0)"
+  (( $(now_ms) - ${pt:-0} < (MAX_REC_S + 60) * 1000 ))
+}
 
 # Refuse before recording, not after transcribing. Discovering the server is
 # missing only once the clip is ready costs the user a whole spoken sentence and
@@ -630,7 +666,9 @@ restart_dictation() {
   log "restart requested (double-tap Square)"
   record_stop quiet "$DICTATE_PID" || true
   stop_pump
-  rm -f "$TRANSLATE_REQ"
+  # A restart throws the take away, so delete it here: record_start now keeps
+  # whatever raw audio it finds instead of truncating it.
+  rm -f "$TRANSLATE_REQ" "$draw"
   play_sound cancel
   record_start "$draw" "$DICTATE_PID" dictate
   notify "↺ restarted" 900
