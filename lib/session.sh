@@ -3,7 +3,9 @@
 # transcription retains its resolved directory and never follows that pointer.
 lock_commands() { flock -x 9; }
 unlock_commands() { flock -u 9; }
-state_changed() { touch "$STATE_DIR/session.changed"; }
+# Both the HUD adapter and its feed listen for MODIFY. touch on an existing
+# marker only emits ATTRIB, so every transition must actually write the file.
+state_changed() { printf 'changed\n' > "$STATE_DIR/session.changed"; }
 
 session_paths() {
   TAKE_DIR="$1"

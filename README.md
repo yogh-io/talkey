@@ -513,7 +513,8 @@ setup/check.sh
 ```
 
 This checks Bash syntax and runs the regression suite using fake devices and
-isolated temporary directories. Python and jq are needed for tests. ShellCheck
+isolated temporary directories. Python and jq are needed for tests; inotify-tools
+enables the HUD lifecycle tests against a real filesystem watcher. ShellCheck
 runs when installed; CI installs it and runs the same checks. No model or desktop
 session is needed. A real microphone/X11/eww smoke test is still needed for changes
 to those integrations.
