@@ -11,7 +11,7 @@
 ;; bare/relative name, so the launcher (talkey-hud) exports TALKEY_EWW_DIR and we
 ;; reference it here. Fields: header, transcript, level (0..100), zone, readout, dbfs.
 (deflisten hud
-  :initial '{"header":"listening","headertext":"LISTENING","transcript":"","timetext":"0s","long":false,"footertext":"tap ⏎ send  ·  ■ Square translates","footerkind":"plain","metricstext":"","pzone":"","level":0,"zone":"silence","meterpath":"blank.svg"}'
+  :initial '{"header":"listening","headertext":"LISTENING","transcript":"","timetext":"0s","long":false,"footertext":"tap submit send  ·  memo translates","footerkind":"plain","metricstext":"","pzone":"","level":0,"zone":"silence","meterpath":"blank.svg"}'
   "$TALKEY_EWW_DIR/eww-feed")
 
 ;; Studio-console layout. Header (state + elapsed), transcript hero, the level in

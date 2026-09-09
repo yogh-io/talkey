@@ -1,146 +1,193 @@
 #!/usr/bin/env python3
-# talkey-live-pump - stable live transcription for the dictation overlay.
-#
-# Whisper is a batch model: re-running it on a growing buffer gives UNSTABLE
-# output (words re-interpret as context grows, the tail is held), so showing it
-# raw flickers and lags in chunks. This applies the LocalAgreement-2 policy used
-# by real streaming ASR (ufal/whisper_streaming, WhisperLiveKit): transcribe the
-# growing buffer a few times a second and only COMMIT a word once two
-# consecutive passes agree on it. Committed text grows word-by-word, ~1-2 words
-# behind speech, and never shrinks. It talks to the SAME whisper.cpp server the
-# rest of the system uses; nothing new to run.
-#
-# Reads the raw PCM capture, writes the agreed text to the transcript file the
-# overlay renders. Exits when the recorder's pidfile goes away (recording
-# stopped) or on SIGTERM. The accurate final transcript is still produced
-# separately by talkey on stop; this only drives the live view.
-#
-#   talkey-live-pump RAW TRANSCRIPT PIDFILE
-#
-# Env: TALKEY_WHISPER_URL, TALKEY_LANG, TALKEY_STREAM_INTERVAL, TALKEY_PROMPT
-import os, sys, time, re, struct, tempfile, subprocess, signal, traceback
+"""Publish an agreed live preview into one take's private transcript file.
 
-RAW, TRANSCRIPT, PIDFILE = sys.argv[1], sys.argv[2], sys.argv[3]
-URL      = os.environ.get("TALKEY_WHISPER_URL", "http://127.0.0.1:8910/inference")
-LANG     = os.environ.get("TALKEY_LANG", "en")
-INTERVAL = float(os.environ.get("TALKEY_STREAM_INTERVAL", "0.35"))
-# Stop re-transcribing once the buffer passes this many seconds. Each pass re-runs
-# whisper on the WHOLE buffer, so cost grows with length, and past a minute a pass
-# no longer finishes inside the commit cadence - the churn is pure load. The final
-# transcript talkey makes on release is still complete, at any length - this only
-# pauses the live preview, and is a second backstop to talkey's hard recording cap.
-MAX_PUMP_S = float(os.environ.get("TALKEY_MAX_PUMP_S", "60"))
-BASE_PROMPT = os.environ.get("TALKEY_PROMPT", "")
-DEBUG    = os.environ.get("TALKEY_STREAM_DEBUG", "0") == "1"
-DIAG     = os.environ.get("TALKEY_DIAG", "")   # durable per-pass trace file (bin/talkey-diag)
+The final transcription is independent. SIGTERM interrupts an in-flight HTTP
+request, and recorder identity is checked again before publishing a response.
+Only the Python standard library is required.
+"""
+import argparse
+import io
+import os
+from pathlib import Path
+import re
+import signal
+import sys
+import time
+import traceback
+import urllib.error
+import urllib.request
+import uuid
+import wave
 
-def _stamp():
-    return time.strftime("%H:%M:%S") + f".{int((time.time()%1)*1000):03d}"
 
-def dbg(msg):
-    if DEBUG:
-        sys.stderr.write(f"live-pump {msg}\n"); sys.stderr.flush()
-    if DIAG:
+class StopRequested(Exception):
+    """Normal worker shutdown, including during network I/O."""
+
+
+def stop_requested(*_):
+    raise StopRequested()
+
+
+def normalized(word):
+    return re.sub(r"[^\w]", "", word.casefold())
+
+
+class Agreement:
+    """Two successive hypotheses must agree before the preview grows."""
+    def __init__(self):
+        self.previous = []
+        self.shown = []
+
+    def update(self, text):
+        current = text.split()
+        count = 0
+        for old, new in zip(self.previous, current):
+            if normalized(old) != normalized(new):
+                break
+            count += 1
+        self.previous = current
+        if count > len(self.shown):
+            self.shown = current[:count]
+            return " ".join(self.shown)
+        return None
+
+
+def wav_bytes(pcm, sample_rate=16000, channels=1):
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(pcm[:len(pcm) // (2 * channels) * (2 * channels)])
+    return output.getvalue()
+
+
+def transcribe(pcm, url, language, prompt, sample_rate, channels):
+    boundary = uuid.uuid4().hex
+    fields = {"language": language, "temperature": "0", "response_format": "text"}
+    if prompt:
+        fields["prompt"] = prompt
+    parts = []
+    for key, value in fields.items():
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode())
+    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n'.encode())
+    parts += [wav_bytes(pcm, sample_rate, channels), f'\r\n--{boundary}--\r\n'.encode()]
+    request = urllib.request.Request(url, data=b"".join(parts), headers={
+        "Content-Type": f"multipart/form-data; boundary={boundary}"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        text = response.read().decode("utf-8")
+    text = re.sub(r"\[[^\]]*\]|\*[^*]*\*", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def recorder_identity(pidfile):
+    try:
+        pid = pidfile.read_text().strip()
+        if not pid.isdecimal():
+            return None
+        stat = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
+        if stat[0] == "Z":
+            return None
+        expected = pidfile.with_name(pidfile.name + ".start")
+        if expected.exists() and expected.read_text().strip() != stat[19]:
+            return None
+        return pid, stat[19]
+    except (OSError, IndexError):
+        return None
+
+
+class Pump:
+    def __init__(self, raw, transcript, pidfile):
+        self.raw, self.transcript, self.pidfile = map(Path, (raw, transcript, pidfile))
+        self.url = os.environ.get("TALKEY_WHISPER_URL", "http://127.0.0.1:8910/inference")
+        self.language = os.environ.get("TALKEY_LANG", "en")
+        self.interval = float(os.environ.get("TALKEY_STREAM_INTERVAL", "0.3"))
+        self.cap = float(os.environ.get("TALKEY_MAX_PUMP_S", "60"))
+        self.sample_rate = int(os.environ.get("TALKEY_SAMPLE_RATE", "16000"))
+        self.channels = int(os.environ.get("TALKEY_CHANNELS", "1"))
+        if min(self.interval, self.cap, self.sample_rate, self.channels) <= 0:
+            raise ValueError("stream interval, cap, sample rate and channels must be positive")
+        self.prompt = os.environ.get("TALKEY_PROMPT", "")
+        self.identity = recorder_identity(self.pidfile)
+        self.agreement = Agreement()
+
+    def alive(self):
+        return self.identity is not None and recorder_identity(self.pidfile) == self.identity
+
+    def infer(self, pcm):
+        return transcribe(pcm, self.url, self.language, self.prompt, self.sample_rate, self.channels)
+
+    def publish(self, text):
+        tmp = self.transcript.with_name(f"{self.transcript.name}.{os.getpid()}.tmp")
         try:
-            with open(DIAG, "a") as f:
-                f.write(f"{_stamp()} pump {msg}\n")
+            tmp.write_text(text)
+            if self.alive():
+                os.replace(tmp, self.transcript)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def run(self):
+        trace(f"start url={self.url} lang={self.language} interval={self.interval}s")
+        last_size, capped = -1, False
+        bytes_per_second = self.sample_rate * self.channels * 2
+        while self.alive():
+            try:
+                size = self.raw.stat().st_size
+            except FileNotFoundError:
+                break
+            seconds = size / bytes_per_second
+            if seconds > self.cap:
+                if not capped:
+                    trace(f"buf={seconds:.1f}s over MAX_PUMP_S={self.cap}s - live preview paused")
+                    capped = True
+            elif size > bytes_per_second and size != last_size:
+                start = time.monotonic()
+                try:
+                    text = self.infer(self.raw.read_bytes())
+                except (OSError, urllib.error.URLError, UnicodeError) as error:
+                    trace(f"request failed: {error}")
+                else:
+                    if not self.alive():
+                        break
+                    last_size = size
+                    agreed = self.agreement.update(text)
+                    if agreed is not None:
+                        self.publish(agreed)
+                    trace(f"buf={seconds:.1f}s pass={int((time.monotonic()-start)*1000)}ms "
+                          f"hyp={len(text.split())}w shown={len(self.agreement.shown)}w")
+            time.sleep(self.interval)
+
+
+def trace(message):
+    line = f"{time.strftime('%H:%M:%S')} pump {message}\n"
+    if os.environ.get("TALKEY_STREAM_DEBUG") == "1":
+        print(line, end="", file=sys.stderr)
+    if path := os.environ.get("TALKEY_DIAG"):
+        try:
+            with open(path, "a") as output:
+                output.write(line)
         except OSError:
             pass
 
-_run = True
-signal.signal(signal.SIGTERM, lambda *_: globals().__setitem__("_run", False))
-
-def recorder_alive() -> bool:
-    try:
-        with open(PIDFILE) as f:
-            pid = int(f.read().strip())
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        return False
-
-def wav_bytes(pcm: bytes) -> bytes:
-    n = len(pcm)
-    return (b"RIFF" + struct.pack("<I", 36 + n) + b"WAVEfmt " +
-            struct.pack("<IHHIIHH", 16, 1, 1, 16000, 32000, 2, 16) +
-            b"data" + struct.pack("<I", n) + pcm)
-
-def transcribe(pcm: bytes, prompt: str) -> str:
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        f.write(wav_bytes(pcm)); path = f.name
-    try:
-        cmd = ["curl", "-sS", "--max-time", "20", URL,
-               "-F", f"file=@{path}", "-F", f"language={LANG}",
-               "-F", "temperature=0", "-F", "response_format=text"]
-        if prompt:
-            cmd += ["-F", f"prompt={prompt}"]
-        out = subprocess.run(cmd, capture_output=True, text=True).stdout
-    finally:
-        try: os.unlink(path)
-        except OSError: pass
-    out = re.sub(r"\[[^\]]*\]", "", out)          # strip [BLANK_AUDIO] etc
-    return re.sub(r"\s+", " ", out).strip()
-
-def norm(w: str) -> str:
-    return re.sub(r"[^\w]", "", w.lower())
-
-def common_prefix_len(a, b) -> int:
-    n = 0
-    while n < len(a) and n < len(b) and norm(a[n]) == norm(b[n]):
-        n += 1
-    return n
 
 def main():
-    dbg(f"start url={URL} lang={LANG} interval={INTERVAL}s prompt={len(BASE_PROMPT)}chars")
-    prev, shown, last_size, capped = [], [], -1, False
-    def write(wl):
-        tmp = TRANSCRIPT + ".tmp"
-        with open(tmp, "w") as f:
-            f.write(" ".join(wl))
-        os.replace(tmp, TRANSCRIPT)
-    while _run and recorder_alive():
-        try:
-            size = os.path.getsize(RAW)
-        except OSError:
-            size = 0
-        # Past the cap, stop re-transcribing: the per-pass cost has grown too large
-        # to keep paying every INTERVAL. Live preview holds; talkey's final transcript
-        # is unaffected. Keep looping so we still exit when the recorder stops.
-        if size / 32000 > MAX_PUMP_S:
-            if not capped:
-                dbg(f"buf={size/32000:.1f}s over MAX_PUMP_S={MAX_PUMP_S}s - live preview paused (final transcript still complete)")
-                capped = True
-            time.sleep(INTERVAL)
-            continue
-        # Only re-transcribe when new audio arrived (a pause adds no bytes).
-        if size > 32000 and size != last_size:
-            last_size = size
-            with open(RAW, "rb") as f:
-                pcm = f.read()
-            t0 = time.time()
-            cur = transcribe(pcm, BASE_PROMPT).split()
-            ms = int((time.time() - t0) * 1000)
-            # LocalAgreement-2: show only the prefix the last two passes agree on
-            # (drops whisper's unstable trailing guesses). Recompute every pass -
-            # do NOT lock words, or an early re-interpretation stalls forever. Only
-            # ever grow what's shown, so the overlay never flickers backward.
-            agreed = cur[:common_prefix_len(prev, cur)]
-            if cur and len(agreed) > len(shown):
-                shown = agreed
-                write(shown)
-            dbg(f"buf={size/32000:.1f}s pass={ms}ms hyp={len(cur)}w "
-                f"agreed={len(agreed)}w shown={len(shown)}w")
-            prev = cur
-        time.sleep(INTERVAL)
-    dbg("exit reason=" + ("sigterm" if not _run else "recorder-gone")
-        + f" final_shown={len(shown)}w")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("raw")
+    parser.add_argument("transcript")
+    parser.add_argument("pidfile")
+    args = parser.parse_args()
+    signal.signal(signal.SIGTERM, stop_requested)
+    signal.signal(signal.SIGINT, stop_requested)
+    try:
+        Pump(args.raw, args.transcript, args.pidfile).run()
+    except StopRequested:
+        trace("exit reason=signal")
+    except Exception:
+        trace("CRASH\n" + traceback.format_exc())
+        raise
+    else:
+        trace("exit reason=recorder-gone")
+
 
 if __name__ == "__main__":
-    # Never die silently: a crash here (e.g. a bad call signature) leaves the
-    # overlay with no live text and no clue why. Record the full traceback to the
-    # diag trace so bin/talkey-diag surfaces it.
-    try:
-        main()
-    except Exception:
-        dbg("CRASH\n" + traceback.format_exc())
-        raise
+    main()

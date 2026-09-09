@@ -15,8 +15,8 @@
 # with bin/talkey-replay <recording.wav>.
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-for _l in "$SCRIPT_DIR/../lib" /usr/share/talkey/lib; do
-  [[ -f "$_l/common.sh" ]] && { . "$_l/common.sh"; break; }
+for _l in "${TALKEY_DATA_DIR:-/nonexistent}/lib" "$SCRIPT_DIR/../lib" /usr/share/talkey/lib; do
+  [[ -f "$_l/common.sh" ]] && { . "$_l/common.sh" || exit 1; break; }
 done
 DIAG="$STATE_DIR/live.diag"
 

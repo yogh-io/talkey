@@ -24,7 +24,7 @@ fi
 
 cd "$OPT_DIR"
 
-cmake_flags=(-DCMAKE_BUILD_TYPE=Release)
+cmake_flags=(-DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=OFF)
 if [[ "${WHISPER_CUDA:-0}" == "1" ]]; then
   echo ">> configuring with CUDA"
   export PATH="/opt/cuda/bin:$PATH"
@@ -36,7 +36,7 @@ if [[ "${WHISPER_CUDA:-0}" == "1" ]]; then
   arch="${WHISPER_CUDA_ARCH:-}"
   if [[ -z "$arch" ]]; then
     arch="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
-            | head -1 | tr -d '. ' )"
+            | head -1 | tr -d '. ' ) || arch=native"
     [[ "$arch" =~ ^[0-9]+$ ]] || arch=native
   fi
   echo ">> CUDA architecture: $arch"

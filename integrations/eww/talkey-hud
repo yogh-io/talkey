@@ -14,8 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # Finds the data root, loads ~/.config/talkey/talkey.env, sets STATE_DIR. In a
 # checkout this script lives in integrations/eww, so the probe looks two levels
 # up as well as one.
-for _l in "$SCRIPT_DIR/../../lib" "$SCRIPT_DIR/../lib" /usr/share/talkey/lib; do
-  [[ -f "$_l/common.sh" ]] && { . "$_l/common.sh"; break; }
+for _l in "${TALKEY_DATA_DIR:-/nonexistent}/lib" "$SCRIPT_DIR/../../lib" "$SCRIPT_DIR/../lib" /usr/share/talkey/lib; do
+  [[ -f "$_l/common.sh" ]] && { . "$_l/common.sh" || exit 1; break; }
 done
 [[ -n "${DATA_DIR:-}" ]] || { echo "talkey-hud: cannot find lib/common.sh" >&2; exit 1; }
 
@@ -119,15 +119,16 @@ help_json() {
   # The defaults name the ROLE, not a key. Most keyboards have no circle, square
   # or triangle to point at, so claiming one would be wrong for nearly everyone.
   # Set TALKEY_LABEL_* to whatever is printed on the keys you actually bound.
-  printf '{"dictate":"%s","dictate2":"%s","submit":"%s","memo":"%s","lang":"%s","lang2":"%s"}' \
-    "${TALKEY_LABEL_DICTATE:-dictate}" "${TALKEY_LABEL_DICTATE2:-2nd language}" \
-    "${TALKEY_LABEL_SUBMIT:-submit}" "${TALKEY_LABEL_MEMO:-memo}" \
-    "$l1" "$l2"
+  jq -nc --arg d "${TALKEY_LABEL_DICTATE:-dictate}" \
+    --arg d2 "${TALKEY_LABEL_DICTATE2:-2nd language}" \
+    --arg s "${TALKEY_LABEL_SUBMIT:-submit}" --arg m "${TALKEY_LABEL_MEMO:-memo}" \
+    --arg l "$l1" --arg l2 "$l2" \
+    '{dictate:$d,dictate2:$d2,submit:$s,memo:$m,lang:$l,lang2:$l2}'
 }
 open_help()  { ew update "help=$(help_json)"; ew open talkeyhelp ${open_args[@]+"${open_args[@]}"}; }
 close_help() { ew close talkeyhelp; }
 
-if [[ "${1:-}" == stop ]]; then close_hud; close_help; ew_optional kill; exit 0; fi
+if [[ "${1:-}" == stop ]]; then close_hud; ew_optional close talkeyhelp; ew_optional kill; exit 0; fi
 
 command -v inotifywait >/dev/null 2>&1 || { echo "need inotify-tools"; exit 1; }
 mkdir -p "$STATE_DIR"
@@ -144,7 +145,7 @@ fi
 # it can't resolve eww-feed). Kill is a no-op if none is running.
 ew_optional kill; sleep 0.3; ew daemon || echo "talkey-hud: eww daemon failed to start - see $HUD_LOG" >&2
 sleep 0.4
-[[ -f "$PIDFILE" ]] && open_hud
+[[ -f "$PIDFILE" || -f "$PENDING" ]] && open_hud
 [[ -f "$HELP_ON" ]] && open_help
 
 # Monitor the state dir. The recorder pidfile appearing -> show now. The pidfile
@@ -154,15 +155,17 @@ sleep 0.4
 # Same two guards as ew(): 9>&- so this long-lived child never inherits the
 # single-instance lock, and a trap so it dies with us instead of being reparented
 # to init and watching the state dir forever.
-exec 8< <(inotifywait -q -m -e create -e delete -e moved_to -e moved_from \
+exec 8< <(inotifywait -q -m -e create -e delete -e moved_to -e moved_from -e modify \
            --format '%e %f' "$STATE_DIR" 2>>"$HUD_LOG" 9>&-)
 WATCH_PID=$!
-trap 'kill "$WATCH_PID" 2>/dev/null' EXIT INT TERM
+trap 'kill "$WATCH_PID" 2>/dev/null || true' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 while read -r _ev fname <&8; do
   case "$fname" in
-    dictate.pid)
-      if [[ -f "$PIDFILE" ]]; then open_hud; else schedule_close; fi ;;
+    session.changed|dictate.pid)
+      if [[ -f "$PIDFILE" || -f "$PENDING" ]]; then open_hud; else schedule_close; fi ;;
     dictate.pending)
       # Only the marker going away matters here - it appears while the recorder
       # pidfile is still there, and that is what opened the HUD.

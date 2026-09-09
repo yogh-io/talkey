@@ -14,6 +14,7 @@ url="https://github.com/yogh-io/talkey"
 license=('MIT')
 depends=(
   'bash'
+  'util-linux'
   'whisper-cpp'
   'ffmpeg'
   'xdotool'
@@ -78,12 +79,13 @@ package() {
     bin/talkey-live-pump \
     bin/talkey-norepeat \
     bin/talkey-whisper-server \
-    integrations/eww/talkey-hud
+    bin/talkey-hud
 
   # Read-only data. The layout under this root matches a git checkout exactly,
   # so the scripts resolve it with one probe and behave identically either way.
   install -Dm644 -t "$pkgdir/usr/share/$_name" vocabulary.txt
-  install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/common.sh
+  install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/*.sh
+  install -Dm644 -t "$pkgdir/usr/share/$_name/lib/setup" lib/setup/*.sh
   install -Dm644 -t "$pkgdir/usr/share/$_name/sounds" sounds/*.wav
   install -Dm644 -t "$pkgdir/usr/share/$_name/bindings" \
     bindings/i3.conf bindings/sxhkdrc bindings/xbindkeysrc bindings/README.md
@@ -91,17 +93,20 @@ package() {
   install -Dm644 -t "$pkgdir/usr/share/$_name/integrations/eww" \
     integrations/eww/eww.yuck integrations/eww/eww.scss integrations/eww/blank.svg \
     integrations/eww/README.md
-  install -Dm755 -t "$pkgdir/usr/share/$_name/integrations/eww" integrations/eww/eww-feed
+  install -Dm755 -t "$pkgdir/usr/share/$_name/integrations/eww" integrations/eww/eww-feed integrations/eww/talkey-hud
 
   # User units, with the installed path baked in. talkey-hud and talkey-norepeat
   # are optional - a window manager can start them instead - but a service is the
   # only WM-independent way, so ship them.
+  . lib/install.sh
   local u
   for u in talkey-whisper talkey-hud talkey-norepeat; do
-    sed 's|@BINDIR@|/usr/bin|g' "systemd/$u.service.in" > "$srcdir/$u.service"
+    render_unit "systemd/$u.service.in" /usr/bin > "$srcdir/$u.service"
     install -Dm644 "$srcdir/$u.service" "$pkgdir/usr/lib/systemd/user/$u.service"
   done
 
   install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname/docs" docs/architecture.md
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname/docs/screenshots" docs/screenshots/*.png
   install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE
 }

@@ -8,6 +8,7 @@ pkgbase = talkey-git
 	license = MIT
 	makedepends = git
 	depends = bash
+	depends = util-linux
 	depends = whisper-cpp
 	depends = ffmpeg
 	depends = xdotool

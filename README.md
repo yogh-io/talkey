@@ -178,7 +178,7 @@ leaving it to you.
 
 | | |
 |---|---|
-| Required | X11, `bash` 4+, `whisper-cpp`, `ffmpeg`, `xdotool`, `xset`, `curl`, and for the HUD `eww` + `inotify-tools` + `jq` |
+| Required | X11, `bash` 4+, `whisper-cpp`, `ffmpeg`, `xdotool`, `xset`, `curl`, `flock` (util-linux), and for the HUD `eww` + `inotify-tools` + `jq` |
 | Sound | a PulseAudio-compatible server: PulseAudio itself, or PipeWire with `pipewire-pulse`. Recording is `ffmpeg -f pulse`, playback is `paplay`. |
 | A speech model | `whisper.cpp-model-large-v3-turbo` (default), or any ggml model |
 | Live text in the HUD as you speak | `python` - without it the HUD still shows state and the meter |
@@ -211,9 +211,11 @@ mkdir -p ~/.config/talkey
 cp /usr/share/talkey/config/talkey.env.example ~/.config/talkey/talkey.env
 ```
 
-The format is the same as a systemd `EnvironmentFile` - `KEY=value`, one per
-line, `#` comments. It is parsed rather than sourced, so no shell code runs from
-it. Only `TALKEY_*` names are read. Anything already set in the environment wins
+The format is `KEY=value`, one per line, with `#` comments and optional
+single or double quotes. Double quotes support escaped quotes and backslashes.
+Values are literal: no shell code or variable expansion runs. This is a small
+format shared by all commands and services, not the full systemd
+`EnvironmentFile` syntax. Only `TALKEY_*` names are read. Anything already set in the environment wins
 over the file, so a per-binding override still works:
 
 ```
@@ -235,11 +237,12 @@ The most useful settings:
 | `TALKEY_TYPE_DELAY` | `8` | milliseconds per character when typing |
 | `TALKEY_PASTE` | `0` | `1` pastes via the clipboard instead of typing - instant, but clobbers your clipboard |
 | `TALKEY_SUBMIT` | `0` | `1` presses Enter automatically after typing |
-| `TALKEY_STREAM` | `1` | `0` turns off the live HUD; transcribe only on release |
+| `TALKEY_STREAM` | `1` | `0` disables live transcription; the HUD still shows state and the meter |
 | `TALKEY_SOUNDS` | `1` | `0` for silence |
 | `TALKEY_ARCHIVE` | `1` | keep a `.wav` of every recording |
 | `TALKEY_ARCHIVE_DIR` | `~/.local/share/talkey/recordings` | where those go |
 | `TALKEY_ARCHIVE_TITLE` | `1` | name those recordings after what you said, using Ollama |
+| `TALKEY_CANCELLED_DIR` | `~/.local/share/talkey/recordings/cancelled` | where cancelled and restarted takes are parked |
 | `TALKEY_OLLAMA_MODEL` | `qwen2.5:3b` | which Ollama model writes the name - it must be pulled |
 | `TALKEY_OLLAMA_URL` | `http://localhost:11434/api/generate` | where Ollama is |
 | `TALKEY_HOLD_MS` | `450` | longer press than this counts as hold, shorter as a tap |
@@ -251,7 +254,7 @@ labels on the help sheet.
 
 ### Recordings named after what you said
 
-Every dictation is kept as a `.wav`, and a directory of `dictate-20260728-1412.wav`
+Every dictation is kept as a `.wav` with a matching `.txt` transcript, and a directory of `dictate-20260728-1412.wav`
 is not something anyone browses twice. So talkey asks a local Ollama for two or
 three keywords from the transcript and puts them in the filename instead:
 `dictate-20260728-1412-buy-groceries-pick.wav`.
@@ -306,6 +309,18 @@ X11 **auto-repeat** is switched off for the bound keycodes, so holding a key is
 one clean press and release rather than a machine-gun of events. A small watcher
 reapplies that whenever a keyboard re-enumerates, because X quietly turns it
 back on after a reconnect or a suspend.
+
+### Overlapping takes and recovery
+
+You can start a new recording while the previous one transcribes. Each take owns
+its files and control flags. If the earlier result finishes after a newer take
+has started, it is kept in its own `final.txt` and archive instead of typing into
+the newer dictation. A notification names the recovery file.
+
+Empty recordings and failed transcriptions never trigger queued Enter. A queued
+submit follows successful text insertion once; it is skipped if focus moved.
+Cancelled and restarted takes are recoverable from the cancelled archive when
+`TALKEY_ARCHIVE=1`. A failed archive conversion keeps the original runtime audio.
 
 ### Long dictations
 
@@ -397,9 +412,10 @@ Local storage is a different question, and worth knowing about:
 
 | What | Where | Turn it off with |
 |---|---|---|
-| A `.wav` of every dictation and memo | `~/.local/share/talkey/recordings` | `TALKEY_ARCHIVE=0` |
+| Audio of every dictation and memo, plus final dictation text | `~/.local/share/talkey/recordings` | `TALKEY_ARCHIVE=0` |
 | Transcript keywords in those filenames, via Ollama | same, on by default | `TALKEY_ARCHIVE_TITLE=0` |
-| Live transcripts, raw audio, the log | `$XDG_RUNTIME_DIR/talkey` | cleared when you log out |
+| Cancelled and restarted takes, as `.wav` + `.txt` | `~/.local/share/talkey/recordings/cancelled` | `TALKEY_ARCHIVE=0` |
+| Per-take transcripts, recovery audio, metadata and logs | `$XDG_RUNTIME_DIR/talkey` | normally cleared when you log out |
 
 The archive is on by default and never pruned - it is what makes
 `talkey-mic-check` and `talkey-replay` useful, but it does accumulate every word
@@ -408,6 +424,11 @@ you have dictated. To wipe it:
 ```bash
 rm -rf ~/.local/share/talkey/recordings
 ```
+
+If archiving fails, the original audio stays in its take directory for recovery.
+If typing fails, its `final.txt` remains there too. The `/tmp` fallback or a custom
+runtime directory follows your machine’s cleanup policy, rather than necessarily
+being cleared at logout.
 
 The runtime directory holds raw microphone audio and the id of the window text
 is typed into, so it is created private to you (`0700`), and talkey refuses to
@@ -477,16 +498,25 @@ otherwise `xset -r <keycode>` fixes it until the next reconnect.
 
 ## Contributing
 
-Issues and pull requests are welcome. Two conventions worth knowing before you
-open one:
+Issues and pull requests are welcome. See [architecture and ownership rules](docs/architecture.md)
+for the runtime layout and the boundaries between modules.
 
-- **Nothing polls.** State changes arrive via inotify, hooks or events. A
-  `sleep N; check; repeat` loop will be turned down.
-- **The renderer stays thin.** talkey writes state files and knows nothing about
-  how they are drawn. Logic belongs in the recorder, not the adapter.
+- State transitions belong to the controller and must respect take ownership.
+- The renderer handles presentation; it does not control recording or output.
+- Use events for idle state changes. Audio sampling, live inference cadence and
+  bounded process shutdown waits are deliberate exceptions.
 
-Shell code is bash with `set -euo pipefail` where it can be. Run `bash -n` over
-anything you change; there is no build step.
+Run the offline checks before submitting:
+
+```bash
+setup/check.sh
+```
+
+This checks Bash syntax and runs the regression suite using fake devices and
+isolated temporary directories. Python and jq are needed for tests. ShellCheck
+runs when installed; CI installs it and runs the same checks. No model or desktop
+session is needed. A real microphone/X11/eww smoke test is still needed for changes
+to those integrations.
 
 ## Licence
 

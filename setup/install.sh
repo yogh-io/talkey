@@ -14,7 +14,8 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-UNIT_DIR="$HOME/.config/systemd/user"
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+. "$REPO_DIR/lib/install.sh"
 
 "$REPO_DIR/bin/talkey-setup" deps
 
@@ -34,8 +35,7 @@ mkdir -p "$UNIT_DIR"
 # permanently overrides a packaged unit in /usr/lib - see the uninstall note at
 # the end if you later install the package.
 for u in talkey-whisper talkey-hud talkey-norepeat; do
-  sed "s|@BINDIR@|${REPO_DIR//|/\\|}/bin|g" \
-    "$REPO_DIR/systemd/$u.service.in" > "$UNIT_DIR/$u.service"
+  render_unit "$REPO_DIR/systemd/$u.service.in" "$REPO_DIR/bin" > "$UNIT_DIR/$u.service"
 done
 systemctl --user daemon-reload
 

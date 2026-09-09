@@ -10,8 +10,9 @@ After=graphical-session.target
 # Without it this exits immediately, since it has no way to guess your keys.
 #
 # It needs DISPLAY, same as the HUD service.
-EnvironmentFile=-%h/.config/talkey/talkey.env
-ExecStart=@BINDIR@/talkey-norepeat
+# The executable reads talkey.env through the shared parser.
+UMask=0077
+ExecStart="@BINDIR@/talkey-norepeat"
 Restart=on-failure
 RestartSec=2
 

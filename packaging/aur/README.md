@@ -5,7 +5,7 @@ git repo that holds only these files, at its root - it is not a checkout of this
 one. Clone it with:
 
 ```bash
-git clone ssh://aur@aur.archlinux.org/talkey-git.git ~/gitRepos/talkey-git
+git clone ssh://aur@aur.archlinux.org/talkey-git.git
 ```
 
 The AUR accepts pushes to `master` and no other branch, so a fresh clone whose
@@ -22,8 +22,8 @@ Arch expects.
 ## Publishing an update
 
 ```bash
-cd ~/gitRepos/talkey-git            # the AUR clone, on branch master
-cp ~/gitRepos/talkey/packaging/aur/{PKGBUILD,talkey-git.install} .
+cd talkey-git                       # the AUR clone, on branch master
+cp /path/to/talkey/packaging/aur/{PKGBUILD,talkey-git.install} .
 makepkg -f                          # rewrites pkgver= from the clone
 makepkg --printsrcinfo > .SRCINFO   # must be regenerated after that
 git add PKGBUILD .SRCINFO talkey-git.install

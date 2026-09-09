@@ -10,10 +10,11 @@ After=graphical-session.target
 # running both is harmless.
 #
 # It needs DISPLAY. A graphical session started through systemd usually imports
-# it; if yours does not, add DISPLAY here or in the environment file.
-EnvironmentFile=-%h/.config/talkey/talkey.env
-ExecStart=@BINDIR@/talkey-hud
-ExecStop=@BINDIR@/talkey-hud stop
+# it; if yours does not, set Environment=DISPLAY=:0 in a systemd service override.
+# The executable reads talkey.env through the shared parser.
+UMask=0077
+ExecStart="@BINDIR@/talkey-hud"
+ExecStop="@BINDIR@/talkey-hud" stop
 Restart=on-failure
 RestartSec=2
 

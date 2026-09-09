@@ -5,8 +5,9 @@ is display-only: it reads the same state files `bin/talkey` writes and never
 feeds back into the recorder.
 
 `talkey` stays renderer-agnostic - it just writes the state files. This adapter
-watches the recorder pidfile (`$STATE_DIR/dictate.pid`) via inotify and opens or
-closes the HUD on its own, event-driven, no polling.
+watches `$STATE_DIR/session.changed` via inotify and reads the current take
+through compatibility paths such as `dictate.pid` and `dictate.transcript`.
+Each take owns its state; older workers cannot overwrite the current display.
 
 Why eww over a terminal: a terminal caps the level meter at 8 block-heights and
 16 colours. eww gives a rounded translucent panel, proportional type for the
@@ -23,7 +24,8 @@ eww-feed     streams the live state as JSON (peak dBFS -> level + coloured trace
 talkey-hud   the renderer adapter: daemon + open/close the HUD per dictation
 ```
 
-`talkey-hud` is installed onto your PATH; the three files it reads stay
+The `bin/talkey-hud` launcher works from a checkout and from an installed package.
+The files it reads stay
 together in this directory (`/usr/share/talkey/integrations/eww` when installed
 from a package).
 
@@ -68,3 +70,6 @@ TALKEY_SVG_W/_H      level-trace image size
 ```
 
 `talkey-hud` passes the first four to `eww open`, which overrides the geometry.
+
+Meter rendering lives in `lib/hud.sh`. It samples only while the recorder is alive,
+retains the final trace and duration, and reports when live preview reaches its cap.
