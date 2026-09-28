@@ -30,7 +30,12 @@ record_start() {
 
 record_stop() {
   [[ -f "$PIDFILE" ]] || return 1
-  process_stop "$PIDFILE" INT || return 1
+  if [[ -f "$TAKE_DIR/auto.owner" ]]; then
+    # The continuous listener owns capture; this pidfile only gates the preview.
+    rm -f "$PIDFILE" "$PIDFILE.start"
+  else
+    process_stop "$PIDFILE" INT || return 1
+  fi
   if [[ "$MODE" == dictate ]]; then stop_pump || return 1; fi
   [[ "${1:-}" == quiet ]] || play_sound stop
   state_changed

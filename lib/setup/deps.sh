@@ -53,7 +53,7 @@ step_deps() {
   ok "core tools present"
 
   local soft=()
-  have python3    || soft+=("python (live text in the HUD as you speak)")
+  have python3    || soft+=("python (auto mode and live text in the HUD)")
   have notify-send|| soft+=("libnotify (desktop notifications)")
   have ollama     || soft+=("ollama (names recordings after what you said)")
   if (( ${#soft[@]} )); then

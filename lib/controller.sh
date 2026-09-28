@@ -160,16 +160,23 @@ finish_memo() {
 
 main() {
   case "$MODE" in
+    auto) auto_command ;;
+    _auto) auto_event ;;
     help)
       if [[ -f "$HELP_ON" ]]; then rm -f "$HELP_ON"; else : > "$HELP_ON"; fi ;;
     submit)
       MODE=dictate
       session_load dictate || true
-      if dictation_active; then cycle_submit; else capture_target && send_return; fi ;;
+      if dictation_active; then cycle_submit
+      elif auto_active; then
+        SUBMIT_REQ="$AUTO_DIR/submit.requested"; CANCEL_REQ="$AUTO_DIR/cancel.requested"
+        cycle_submit
+      else capture_target && send_return; fi ;;
     memo)
       if [[ "$ACTION" == press ]]; then
         MODE=dictate
         if session_load dictate && dictation_active; then
+          [[ ! -f "$TAKE_DIR/auto.owner" ]] || return 0
           [[ ! -f "$DICTATE_PID" ]] || square_mid_dictation
           return 0
         fi
@@ -186,8 +193,21 @@ main() {
       esac ;;
     dictate)
       session_load dictate || true
+      if auto_active; then
+        case "$ACTION" in press|stop) auto_stop ;; esac
+        return 0
+      fi
       case "$ACTION" in
-        press) if recording_active; then finish_dictation; else begin_dictation; fi ;;
+        press)
+          if recording_active; then
+            local pt; pt="$(cat "$PRESSTIME" 2>/dev/null || echo 0)"
+            if [[ -f "$TAKE_DIR/toggle.press" ]] && (( EVENT_MS - ${pt:-0} <= DOUBLE_TAP_MS )); then
+              auto_start
+            else finish_dictation; fi
+          else
+            begin_dictation
+            : > "$TAKE_DIR/toggle.press"
+          fi ;;
         start) if ! recording_active; then begin_dictation; fi ;;
         release)
           if recording_active; then

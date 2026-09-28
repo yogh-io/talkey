@@ -123,6 +123,10 @@ emit() {
     restart_armed)  footertext="$L_MEMO tap again to restart";     footerkind=restart ;;
     *)              footertext="tap $L_SUBMIT send  ·  $L_MEMO translates";  footerkind=plain ;;
   esac
+  if [[ -f "$take/auto.owner" ]]; then
+    if [[ "$footerkind" == plain ]]; then footertext="tap $L_SUBMIT send"; fi
+    footertext+="  ·  ${TALKEY_LABEL_DICTATE:-dictate} exits auto"
+  fi
   local tap=0 now
   [[ ! -s "$take/memo.presstime" ]] || tap="$(cat "$take/memo.presstime")"
   now="$(date +%s%3N)"

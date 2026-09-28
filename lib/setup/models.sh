@@ -12,10 +12,41 @@ MODELS=(
   "base.en|142 MB|English only, fastest, noticeably rougher"
 )
 
+step_vad() {
+  if TALKEY_SMART_TURN=0 "${TALKEY_AUTO_PYTHON:-python3}" "$SCRIPT_DIR/talkey-auto-worker" --check; then
+    ok 'auto-mode speech detector ready'
+    return 0
+  fi
+  printf '\nAuto mode needs Python 3, a whisper.cpp shared library with VAD support,\n'
+  printf 'and the official Silero v5.1.2 model. Download the model with:\n\n'
+  printf '  curl -fL --create-dirs -o "%s/ggml-silero-v5.1.2.bin" \\\n' "$MODEL_DIR"
+  printf '    https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin\n\n'
+  printf 'Custom locations: TALKEY_VAD_MODEL and TALKEY_WHISPER_LIB in talkey.env.\n'
+  return 1
+}
+
+step_turn() {
+  if TALKEY_SMART_TURN=1 "${TALKEY_AUTO_PYTHON:-python3}" "$SCRIPT_DIR/talkey-auto-worker" --check; then
+    ok 'Silero and Smart Turn ready (enable TALKEY_SMART_TURN=1 in talkey.env)'
+    return 0
+  fi
+  local data="${XDG_DATA_HOME:-$HOME/.local/share}/talkey"
+  printf '\nSmart Turn runs locally with NumPy, ONNX Runtime and the v3.2 CPU model.\n'
+  printf '  python3 -m venv "%s/turn-venv"\n' "$data"
+  printf '  "%s/turn-venv/bin/python" -m pip install -r "%s/config/smart-turn-requirements.txt"\n' "$data" "$DATA_DIR"
+  printf '  curl -fL --create-dirs -o "%s/models/smart-turn-v3.2-cpu.onnx" \\\n' "$data"
+  printf '    https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-cpu.onnx\n'
+  printf '\nModel SHA-256: 2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f\n'
+  printf '\nThen set these in talkey.env and restart auto mode:\n'
+  printf '  TALKEY_AUTO_PYTHON="%s/turn-venv/bin/python"\n  TALKEY_SMART_TURN=1\n' "$data"
+  return 1
+}
+
 installed_models() {
   local f
   for f in "$MODEL_DIR"/ggml-*.bin /usr/share/whisper.cpp-model-*/ggml-*.bin; do
     [[ -f "$f" ]] || continue
+    [[ "$f" != */ggml-silero-*.bin ]] || continue
     printf '%s\n' "$f"
   done
 }

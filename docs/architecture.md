@@ -2,7 +2,8 @@
 
 Talkey uses Bash for desktop integration and a Python standard-library worker for
 live transcription. The model, microphone, desktop and renderer remain external
-processes. No resident controller daemon is required.
+processes. Manual dictation needs no resident controller daemon; opt-in auto mode
+runs a background Python capture/VAD worker.
 
 ## Modules
 
@@ -19,6 +20,8 @@ processes. No resident controller daemon is required.
 | `lib/common.sh`, `config.sh`, `settings.sh`, `whisper.sh` | Shared initialization, safe config parsing, recorder defaults and discovery |
 | `lib/setup/` | Interactive setup, split into UI, dependencies, config, models, service and bindings |
 | `bin/talkey-live-pump` | Interruptible HTTP inference, two-pass agreement, atomic preview publication |
+| `bin/talkey-auto-worker`, `lib/auto.sh` | Continuous capture, Silero VAD, endpoint detection, ordered delivery and external status |
+| `lib/smart_turn.py`, `lib/vendor/` | Optional CPU ONNX completion inference and pinned Whisper feature extraction |
 | `lib/hud.sh`, `integrations/eww/` | Presentation, meter rendering and window lifecycle |
 | `lib/install.sh`, `setup/`, `packaging/aur/` | Unit rendering, checkout setup, build and packaging |
 
@@ -54,6 +57,47 @@ at most once. Focus movement can still redirect X11 typing mid-stream; Enter is
 skipped if focus no longer matches the captured target.
 
 ## Recovery and privacy
+
+Auto mode selects a unique run directory through `auto.current`. Internal
+`_auto` callbacks must match that run and its live worker identity. One worker
+captures 16 kHz PCM into a bounded queue while finalization uses the existing
+controller. An auto take's recorder PID identifies the listener for live preview;
+`record_stop` removes this take's marker without stopping continuous capture.
+Only auto-mode shutdown stops that worker. Stopping invalidates the run before
+signalling it and cancels an in-flight take under the command lock. Endpoint
+markers are written before final inference. The next take is published only
+after the preceding finalizer returns, preserving ordered output and the
+existing current-take guard. Errors leave unfinished PCM recoverable.
+
+The VAD uses whisper.cpp's shared C API through ctypes. Newer libraries retain
+Silero state between frames, initialized explicitly before the first frame;
+older VAD-capable libraries classify a rolling one-second context. The detector
+does not invoke transcription while waiting for speech. Idle audio is bounded
+in memory and is not archived. A physical mute can either deliver zero samples
+or stall the stream; both count toward an active phrase's silence timer.
+
+With `TALKEY_SMART_TURN=1`, a VAD pause schedules a single semantic prediction on
+a background thread. The main loop continues capture/VAD and increments a
+revision on every speech frame, invalidating predictions made before resumed
+speech. Input uses the last eight seconds of audio, left-padded when short; the
+silent tail is capped at about half a second so increasing patience cannot erase
+the linguistic context. The PCM context buffer is bounded by eight seconds plus
+the configured maximum pause. Predictions are not repeatedly rerun on silence.
+
+A confident result commits only after the minimum silence and after already
+queued audio has been consumed. An incomplete result holds the same take until
+speech resumes or the maximum silence elapses. The recording cap remains an
+independent limit. Model errors, invalid probabilities and five-second inference
+timeouts fail closed, leaving the take recoverable without typing or Enter.
+The `paused` status distinguishes a held phrase from idle listening. The same
+finalizer and submit flags apply after either semantic completion or the long
+silence timeout, so cancellation and persistent Enter retain their behavior.
+
+Smart Turn is opt-in and uses `TALKEY_AUTO_PYTHON` for the auto worker. Its model
+is loaded once and inference stays on CPU. Dependencies and model are checked
+before a manual recording is interrupted when enabling auto mode. The optional
+libraries are not imported in silence-only mode. The package ships the adapter,
+pinned feature extractor, requirements and licenses, but not model weights.
 
 Archive conversion first reserves a private, unique temporary WAV. Only completed
 files become visible archive entries. Successful dictations also have a `.txt`

@@ -1,0 +1,4 @@
+# CPU-only environment for optional semantic end-of-turn detection.
+# Tested together; no PyTorch, Transformers, or cloud service is needed.
+numpy==2.5.3
+onnxruntime==1.30.0

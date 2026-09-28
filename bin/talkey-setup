@@ -16,6 +16,8 @@
 #   talkey-setup model      # just the model
 #   talkey-setup keys       # just the key bindings - re-run to rebind later
 #   talkey-setup service    # just the whisper service
+#   talkey-setup vad        # check the auto-mode speech detector and show model instructions
+#   talkey-setup turn       # check optional Smart Turn and show local setup instructions
 #
 # Safe to re-run: every step reports what is already done and moves on.
 #
@@ -58,7 +60,9 @@ main() {
     service) step_service ;;
     keys)    step_keys ;;
     deps)    step_deps ;;
-    *) die "unknown step '$what' - try: all, model, service, keys, deps" ;;
+    vad)     step_vad; return $? ;;
+    turn)    step_turn; return $? ;;
+    *) die "unknown step '$what' - try: all, model, service, keys, deps, vad, turn" ;;
   esac
   # The ending reports what actually happened. Anything a step could not finish
   # is listed, in the order it has to be done, with the command that fixes it.

@@ -47,6 +47,14 @@ issue descriptions. The things that are slow to type and easy to say.
 hands-free: tap once to start, again to stop. If you work in two languages, set
 `TALKEY_LANG2` and bind a second key to `talkey dictate-alt` for it.
 
+**Auto listening** - double-tap the dictate key (X on your controller) within
+400 ms to keep listening in the background. Speech starts a phrase automatically;
+By default, 1.2 seconds of silence or microphone mute finishes it, types the result and
+returns to listening. Tap dictate once to turn auto mode off and cancel any
+unfinished phrase. Key releases do not stop auto mode. The double-tap interval
+and silence delay are configurable. Manual hold/toggle dictation still works.
+For long thinking pauses, enable the optional Smart Turn detector described below.
+
 **Memo / translate** - on its own, hold to record and release to play the clip
 straight back, so you can hear whether that came out right. During a dictation
 the same key toggles **translate to English** for the clip: dictate in whatever
@@ -62,7 +70,123 @@ away) → plain (type, no Enter) → round again. Nothing commits mid-sentence, 
 you can tap, keep talking, and undo an accidental press by tapping again. The
 HUD shows what is currently pending.
 
+In auto mode, submit (triangle) uses that same cycle. While waiting for speech,
+it arms the next phrase instead of immediately pressing Enter. During speech or
+final transcription, it changes the current phrase. Each phrase then resets to
+the auto-mode Enter preference (initially `TALKEY_SUBMIT`, plain typing by default).
+Memo/translate gestures during an auto
+phrase are ignored; use manual dictation for translation or restarting a take.
+
 **Help** - a cheat sheet of your own bindings, in a floating window.
+
+### Setting up auto listening
+
+Run `talkey-setup vad` to check the detector and print the model download command.
+Auto mode needs Python 3, the whisper.cpp shared library with its VAD C API, and
+`ggml-silero-v5.1.2.bin` from the
+[official Whisper VAD model repository](https://huggingface.co/ggml-org/whisper-vad).
+It uses the Silero model to recognize speech, independently of Whisper's final
+transcription. All inference stays local. The normal Whisper server must also
+be running. Setup does not download or install anything automatically.
+
+The detector searches `~/.local/share/whisper`, the local whisper.cpp checkout's
+`models` directory, and `/usr/share/whisper.cpp-model-silero-v5.1.2` for the model.
+Set `TALKEY_VAD_MODEL` or `TALKEY_WHISPER_LIB` for other locations. Auto capture
+uses 16 kHz mono regardless of the manual recording format. Useful settings:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `TALKEY_VAD_THRESHOLD` | `0.5` | Minimum speech probability; increase to reject more background sound |
+| `TALKEY_VAD_START_MS` | `160` | Sustained speech required to begin a phrase |
+| `TALKEY_VAD_SILENCE_MS` | `1200` | Silence required to finish; increase for longer thinking pauses |
+
+The worker retains a short pre-roll so detecting speech does not cut off its
+beginning. Silence before speech is held only in a bounded memory buffer.
+Capture continues during transcription, with up to 120 seconds of queued audio;
+phrases are delivered in order. If transcription falls further behind, auto mode
+reports an error and keeps the unfinished take without sending it. Each phrase
+is capped by `TALKEY_MAX_REC_S`. Muting a connected microphone finishes a phrase;
+disconnecting the device may require restarting auto mode after reconnecting.
+
+### Thinking pauses with Smart Turn
+
+`talkey-setup turn` checks the optional semantic turn detector and prints the
+commands to install an isolated Python environment and the pinned Smart Turn
+v3.2 CPU model. Enable `TALKEY_SMART_TURN=1` and set `TALKEY_AUTO_PYTHON` to that
+environment's Python executable, then restart auto mode. NumPy and ONNX Runtime
+are the only additional Python dependencies; neither a cloud service nor
+PyTorch/Transformers is required. The model is about 9 MB.
+
+Silero first identifies a pause. Smart Turn then checks the most recent eight
+seconds of speech audio, using cues from what you said and how you said it.
+It does not consume the Whisper transcript. The default policy is:
+
+- A completion probability of at least **0.9**, followed by at least **2 seconds**
+  of silence, allows the phrase to finish.
+- Otherwise the same phrase stays open for up to **20 seconds** of silence.
+  The HUD/status shows `paused`; resuming speech keeps the same take and resets
+  the silence timer. No text or Enter is sent while the phrase is held open.
+- Twenty seconds of continuous silence finishes even an uncertain phrase.
+  `TALKEY_MAX_REC_S` also remains a hard recording-duration limit.
+
+These are predictions, not guarantees about your intent. A pause after a complete
+sentence can still sound like the end of your turn. Increase
+`TALKEY_TURN_MIN_SILENCE_MS` for more patience even when the model is confident,
+or `TALKEY_TURN_MAX_SILENCE_MS` if twenty seconds is too short. Lower
+`TALKEY_TURN_THRESHOLD` to finish more readily. `TALKEY_SMART_TURN=0` restores
+the simpler silence-based behavior. `TALKEY_TURN_MODEL` overrides the model path,
+which defaults to `$XDG_DATA_HOME/talkey/models/smart-turn-v3.2-cpu.onnx`
+(`~/.local/share/talkey/models/…` when unset).
+
+Capture continues during the model check. If speech resumes, its earlier
+completion prediction is discarded. Each take's `turn.json` records the latest
+probability and whether it finished through a model decision, silence timeout,
+or recording cap. Inference or microphone failures stop auto mode and retain
+unfinished audio; they do not bypass turn detection and send a partial phrase.
+
+Model and preprocessing sources: [Smart Turn](https://github.com/pipecat-ai/smart-turn),
+[pinned model revision](https://huggingface.co/pipecat-ai/smart-turn-v3/tree/f766f81d3cfdf7737ac64aad813d91bbfd56bf93),
+and [vendored feature extraction/licensing](lib/vendor/README.md).
+
+### External status bars
+
+The executable exposes commands for a separate Polybar module or another client:
+
+```sh
+talkey auto start
+talkey auto stop
+talkey auto toggle
+talkey auto status
+talkey auto enter-toggle
+# Explicit choices are also available:
+talkey auto enter-on
+talkey auto enter-off
+```
+
+`status` prints one JSON object and does not open the microphone:
+
+```json
+{"enabled":true,"state":"listening","submit":"type","speech_ended":true,"enter_enabled":false}
+```
+
+`state` is `off`, `starting`, `listening`, `speaking`, `paused`, `transcribing`, or `error`.
+`paused` means an existing phrase is still open while semantic completion is checked
+or the worker waits for you to continue; `listening` means there is no open phrase.
+`submit` is `type`, `send`, or `cancel`. `speech_ended` becomes true when an
+utterance ends and stays true until the next one begins. The same endpoint is
+recorded in the take's `speech.ended` marker. Poll `status`, or watch
+`$STATE_DIR/session.changed` and refresh it on changes. Polybar configuration
+lives outside this project. Auto mode runs until stopped or the worker fails;
+enabling it does not install a login service.
+
+`enter_enabled` is the default for every automatic phrase. The Enter commands
+can change it while auto mode is off, waiting, recording, or transcribing; they
+never press Enter immediately. A change also updates an active phrase unless it
+has been explicitly cancelled. The preference is stored in
+`${XDG_STATE_HOME:-~/.local/state}/talkey/auto-enter` and survives listener restarts
+and logins until changed. Triangle still overrides
+one phrase, and manual dictation still uses `TALKEY_SUBMIT`. Enter is sent only
+after successful, nonempty transcription and insertion into the target window.
 
 ![the cheat sheet](docs/screenshots/help.png)
 
