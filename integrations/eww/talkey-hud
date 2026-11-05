@@ -80,7 +80,11 @@ ew() {
 }
 # `eww kill` with no daemon running is a normal outcome, not a fault.
 ew_optional() { "$EWW" -c "$CFG" "$@" >/dev/null 2>&1 9>&- || true; }
-open_hud()  { ew open talkeyhud ${open_args[@]+"${open_args[@]}"}; }
+# `eww open` on a window that is already open closes and reopens it, and every
+# state change of a take lands here - so open only when it is not up yet, or the
+# HUD flickers at the start and end of each dictation.
+hud_is_open() { "$EWW" -c "$CFG" active-windows 2>/dev/null 9>&- | grep -q '^talkeyhud:'; }
+open_hud()  { hud_is_open || ew open talkeyhud ${open_args[@]+"${open_args[@]}"}; }
 # Closing a window that is already closed is a NORMAL outcome here, not a fault:
 # the recorder pidfile and the pending marker each schedule a close when they go
 # away, and the alert path runs a third on its own timer, so on a plain dictation

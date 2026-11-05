@@ -82,7 +82,7 @@ emit() {
   # Grow the level trace only when the recording actually grows. Idle (no audio) ->
   # empty trace; file shrank -> a new dictation started, so reset; unchanged (e.g.
   # 'done') -> freeze the last real trace instead of appending a flat tail.
-  local sz; sz=$(stat -c%s "$RAW" 2>/dev/null || echo 0)
+  local sz; sz=$(stat -Lc%s "$RAW" 2>/dev/null || echo 0)
   if   (( sz == 0 ));       then : # retain the last meter while the final result is visible
   elif (( sz <  LAST_SZ )); then LVL_HIST=("$pkdb")
   elif (( sz >  LAST_SZ )); then LVL_HIST+=("$pkdb")

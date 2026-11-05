@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix the HUD level meter, which stayed empty since takes moved behind symlinks, and stop the HUD flickering when a take starts or ends.
+
 ## 0.1.1 - 2026-09-28
 
 - Add background automatic dictation with Silero speech detection. Double-tap the dictate key to enable it, or use `talkey auto start|stop|toggle`.
