@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 - 2026-11-05
 
 - Add an optional “message complete” cue, checked during pauses without waiting for semantic completion. The final text excludes the cue and follows the Enter setting.
 - Add configurable whole-phrase voice commands, with three built-in Enter controls and support for user scripts.
