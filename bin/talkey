@@ -20,7 +20,7 @@ if [[ "$MODE" == dictate-alt ]]; then
   MODE=dictate; LANG_OVERRIDE="${TALKEY_LANG2:-}"
   [[ -n "$LANG_OVERRIDE" ]] || { echo 'talkey: set TALKEY_LANG2 for dictate-alt' >&2; exit 1; }
 fi
-for module in settings session display output transcription archive recording gestures auto controller; do
+for module in settings session display output transcription archive recording gestures auto commands controller; do
   . "$DATA_DIR/lib/$module.sh"
 done
 SOUND_DIR="${TALKEY_SOUND_DIR:-$DATA_DIR/sounds}"

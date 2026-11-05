@@ -80,7 +80,7 @@ you can tap, keep talking, and undo an accidental press by tapping again. The
 HUD shows what is currently pending.
 
 **Double-submit (Triangle)** toggles the persistent auto-mode Enter preference,
-just like the Polybar Enter control. The first tap waits
+just like `command enter toggle` or the Polybar Enter control. The first tap waits
 for the double-tap window, so a double tap does not also send Enter or cycle the
 current phrase's submit/cancel state. Use separate single taps to cycle that state.
 This works while auto mode is off, waiting, recording, or transcribing. Square's
@@ -185,6 +185,57 @@ does not match. Recognition errors can miss the cue; tapping the dictate key
 finishes the current phrase independently of speech recognition. Clear
 `TALKEY_END_PHRASE` to disable the feature. `TALKEY_END_PHRASE_SILENCE_MS` adjusts
 the pause before checking. Cue-request failures leave normal turn detection active.
+
+### Configurable voice commands
+
+Set `TALKEY_COMMANDS=1` in `talkey.env` to recognize commands in final dictation
+transcripts. The included commands are `command enter on`, `command enter off`,
+and `command enter toggle`. They change the persistent auto-mode Enter setting,
+report the resulting state, and produce neither typed text nor an Enter keypress.
+They work in manual and auto dictation. In auto mode you can append your ending
+cue, for example “command enter off, message complete,” or tap dictate to finish.
+The additional built-in `stop listening` (also `command stop listening`) switches
+auto mode off without typing or pressing Enter. Its definition is
+`stop-listening.json` and can be disabled or overridden like the Enter commands.
+During a pause, a provisional transcript matching an enabled command can finish
+the phrase promptly; only the final full transcript can execute the command.
+
+Talkey ships definitions in `config/commands.d/` (`/usr/share/talkey/config/commands.d/`
+when installed). Files in `~/.config/talkey/commands.d/` override matching filenames
+or add commands. `TALKEY_COMMANDS_DIR` changes that user directory. Changes are
+read on each final transcript. For example, disable the built-in toggle with
+`~/.config/talkey/commands.d/enter-toggle.json`:
+
+```json
+{"enabled": false}
+```
+
+Override `phrases` to change or add spoken aliases. Or add an external script:
+
+```json
+{
+  "phrases": ["command focus editor", "command show editor"],
+  "exec": ["~/.local/bin/focus-editor"],
+  "timeout_seconds": 10,
+  "enabled": true
+}
+```
+
+The script contains all desktop-specific behavior. Talkey executes the configured
+argument list directly, without a shell or any speech-derived arguments. Scripts
+run in the background with no command lock or stdin; they can call Talkey's CLI.
+A notification reports success/failure, and `command.result.json` in the take
+directory records the exit status and output. The timeout defaults to ten seconds
+and can be set up to 120 seconds. `TALKEY_COMMANDS=0` restores ordinary dictation.
+
+Matching ignores case and punctuation but requires the whole phrase. Registered
+phrases start with `command`, with `stop listening` as the explicit exception.
+Unknown or disabled commands are retained
+as transcripts and reported without being typed or submitted. “Dictate command
+enter on” types the literal words “command enter on.” “Dictate stop listening”
+also types those words literally. Mentioning a command inside
+a longer sentence remains ordinary dictation. Duplicate aliases and malformed
+definitions produce a configuration error instead of running an ambiguous action.
 
 ### External status bars
 

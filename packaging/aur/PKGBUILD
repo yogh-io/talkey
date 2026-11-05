@@ -37,7 +37,7 @@ depends=(
 optdepends=(
   'whisper.cpp-model-large-v3-turbo: the default speech model (AUR) - talkey needs some model'
   'whisper.cpp-model-small: translate-to-English support (AUR)'
-  'python: automatic speech detection and live text in the HUD'
+  'python: automatic speech detection, voice commands and live text in the HUD'
   'python-numpy: optional Smart Turn feature extraction'
   'python-onnxruntime: optional Smart Turn CPU inference'
   'libnotify: desktop notifications alongside the HUD, and the only feedback if you disable it'
@@ -88,7 +88,7 @@ package() {
   # so the scripts resolve it with one probe and behave identically either way.
   install -Dm644 -t "$pkgdir/usr/share/$_name" vocabulary.txt
   install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/*.sh
-  install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/smart_turn.py lib/speech.py
+  install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/smart_turn.py lib/speech.py lib/commands.py
   install -Dm644 -t "$pkgdir/usr/share/$_name/lib/vendor" \
     lib/vendor/*.py lib/vendor/LICENSE.* lib/vendor/README.md
   install -Dm644 -t "$pkgdir/usr/share/$_name/lib/setup" lib/setup/*.sh
@@ -97,6 +97,7 @@ package() {
     bindings/i3.conf bindings/sxhkdrc bindings/xbindkeysrc bindings/README.md
   install -Dm644 -t "$pkgdir/usr/share/$_name/config" config/talkey.env.example
   install -Dm644 -t "$pkgdir/usr/share/$_name/config" config/smart-turn-requirements.txt
+  install -Dm644 -t "$pkgdir/usr/share/$_name/config/commands.d" config/commands.d/*.json
   install -Dm644 -t "$pkgdir/usr/share/$_name/integrations/eww" \
     integrations/eww/eww.yuck integrations/eww/eww.scss integrations/eww/blank.svg \
     integrations/eww/README.md

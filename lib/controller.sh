@@ -97,14 +97,22 @@ finish_dictation() {
       log "superseded result kept at $FINAL_TEXT"
       notify "earlier transcript ready: $FINAL_TEXT" 5000
     else
-      overlay_body "$text"; overlay_metrics
-      if capture_target && insert_text "$text"; then
-        overlay_state done
-        if [[ -f "$SUBMIT_REQ" ]]; then send_return || result=1; fi
-        notify '✓ typed' 800
+      dispatch_voice_command "$text"
+      text="$COMMAND_TEXT"
+      printf '%s\n' "$text" > "$FINAL_TEXT"
+      if (( COMMAND_HANDLED )); then
+        if (( COMMAND_ERROR )); then overlay_state error; else overlay_state done; fi
+        overlay_body "$COMMAND_FEEDBACK"
       else
-        result=1; overlay_state error
-        notify "could not type - transcript kept at $FINAL_TEXT" 5000
+        overlay_body "$text"; overlay_metrics
+        if capture_target && insert_text "$text"; then
+          overlay_state done
+          if [[ -f "$SUBMIT_REQ" ]]; then send_return || result=1; fi
+          notify '✓ typed' 800
+        else
+          result=1; overlay_state error
+          notify "could not type - transcript kept at $FINAL_TEXT" 5000
+        fi
       fi
     fi
     # Release the desktop lock before conversion/titling. New takes use different

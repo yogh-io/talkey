@@ -166,7 +166,14 @@ class EndCue:
     def matches(self, pcm):
         text = transcribe(pcm, os.environ.get('TALKEY_WHISPER_URL', 'http://127.0.0.1:8910/inference'),
                           os.environ.get('TALKEY_LANG', 'en'), self.phrase, 16000, 1)
-        return strip_end_cue(text, self.phrase) is not None
+        if strip_end_cue(text, self.phrase) is not None:
+            return True
+        if os.environ.get('TALKEY_COMMANDS', '0') == '1':
+            from commands import resolve
+            config = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
+            user = Path(os.environ.get('TALKEY_COMMANDS_DIR', config / 'talkey/commands.d'))
+            return resolve(text, data, user)['kind'] in ('builtin', 'exec')
+        return False
 
 
 class Listener:
@@ -196,7 +203,7 @@ class Listener:
         phrase = os.environ.get('TALKEY_END_PHRASE', '').strip()
         if phrase and strip_end_cue(phrase, phrase) is None:
             raise ValueError('TALKEY_END_PHRASE must contain words')
-        self.cue = EndCue(phrase) if phrase else None
+        self.cue = EndCue(phrase) if phrase or os.environ.get('TALKEY_COMMANDS', '0') == '1' else None
         self.cue_executor = ThreadPoolExecutor(max_workers=1) if self.cue else None
         self.cue_audio = deque(maxlen=math.ceil(8000 / FRAME_MS))
         self.cue_prediction = None

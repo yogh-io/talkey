@@ -130,6 +130,15 @@ triangle gesture before output, releasing the lock while waiting for another tap
 Its callback runs with isolated shell state so it cannot replace the finalizer's
 take paths if a newer take appears. Square retains the manual restart gesture.
 
+Opt-in voice command dispatch runs after final transcription, cue stripping,
+cancellation and current-take checks, before keyboard output. Built-in Enter
+actions call the same preference handler as the CLI without reacquiring its lock.
+User JSON definitions overlay packaged defaults by filename. External actions
+receive only predefined argument lists; a detached runner closes the command
+lock and has no cleanup trap for the parent take. Script completion notifications
+and result files do not overwrite a newer take's HUD. Unknown commands never fall
+through to keyboard output. A literal escape bypasses matching explicitly.
+
 Archive conversion first reserves a private, unique temporary WAV. Only completed
 files become visible archive entries. Successful dictations also have a `.txt`
 sidecar, independent of whether live preview is enabled. Cancelled/restarted takes
