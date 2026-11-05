@@ -96,6 +96,16 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(list((self.root/'archive').glob('*.txt'))),1)
         self.assertFalse((take/'dictate.pending').exists())
 
+    def test_long_text_types_within_cap(self):
+        def delay():
+            typed=[k for k in self.keys() if k[0]=='type'][-1]
+            return typed[typed.index('--delay')+1]
+        self.start(); self.run_key('dictate','stop')
+        self.assertEqual(delay(),'8')
+        self.env['TALKEY_TYPE_MAX_MS']='44'   # 'hello world' is 11 characters
+        self.start(); self.run_key('dictate','stop')
+        self.assertEqual(delay(),'4')
+
     def test_failure_never_submits(self):
         for failure in ['fail-wrap','fail-http','bad-json','silence','fail-focus','fail-type']:
             with self.subTest(failure=failure):

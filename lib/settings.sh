@@ -4,6 +4,7 @@ WHISPER_CLI="$(talkey_binary whisper-cli "${TALKEY_WHISPER_CLI:-}" || true)"
 TRANSLATE_MODEL="$(talkey_model_path small "${TALKEY_TRANSLATE_MODEL:-}" || true)"
 AUDIO_SOURCE="${TALKEY_SOURCE:-default}"
 TYPE_DELAY="${TALKEY_TYPE_DELAY:-8}"
+TYPE_MAX_MS="${TALKEY_TYPE_MAX_MS:-2000}"
 TARGET_WINDOW="${TALKEY_TARGET_WINDOW:-1}"
 PASTE="${TALKEY_PASTE:-0}"
 SUBMIT="${TALKEY_SUBMIT:-0}"
@@ -45,7 +46,7 @@ CHANNELS="${TALKEY_CHANNELS:-1}"
 
 
 # Reject malformed arithmetic settings before launching a recorder.
-for setting in SAMPLE_RATE CHANNELS HOLD_MS DOUBLE_TAP_MS MAX_REC_S VOCAB_MAX_S TYPE_DELAY; do
+for setting in SAMPLE_RATE CHANNELS HOLD_MS DOUBLE_TAP_MS MAX_REC_S VOCAB_MAX_S TYPE_DELAY TYPE_MAX_MS; do
   value="${!setting}"
   if [[ ! "$value" =~ ^[0-9]+$ || ${#value} -gt 8 ]]; then
     echo "talkey: invalid $setting: $value" >&2; exit 2

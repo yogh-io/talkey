@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Cap typing time at two seconds (`TALKEY_TYPE_MAX_MS`): long messages type faster, short ones keep the per-character pace.
 - Fix the HUD level meter, which stayed empty since takes moved behind symlinks, and stop the HUD flickering when a take starts or ends.
 
 ## 0.1.1 - 2026-09-28

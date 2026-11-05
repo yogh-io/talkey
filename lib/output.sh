@@ -30,6 +30,9 @@ insert_text() {
     printf '%s' "$1" | "$XCLIP" -selection clipboard || return 1
     "$XDOTOOL" key --clearmodifiers ctrl+v
   else
-    "$XDOTOOL" type --clearmodifiers --delay "$TYPE_DELAY" -- "$1"
+    # Long messages type faster, so the whole text lands within TYPE_MAX_MS.
+    local delay="$TYPE_DELAY"
+    if (( TYPE_MAX_MS && ${#1} * delay > TYPE_MAX_MS )); then delay=$(( TYPE_MAX_MS / ${#1} )); fi
+    "$XDOTOOL" type --clearmodifiers --delay "$delay" -- "$1"
   fi
 }

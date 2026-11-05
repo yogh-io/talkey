@@ -359,6 +359,7 @@ The most useful settings:
 | `TALKEY_MODEL_NAME` | `large-v3-turbo` | which model the server loads |
 | `TALKEY_HUD_MONITOR` | *(primary)* | which display the HUD opens on, e.g. `DP-1` |
 | `TALKEY_TYPE_DELAY` | `8` | milliseconds per character when typing |
+| `TALKEY_TYPE_MAX_MS` | `2000` | longest a message takes to type; longer ones type faster. `0` = no cap |
 | `TALKEY_PASTE` | `0` | `1` pastes via the clipboard instead of typing - instant, but clobbers your clipboard |
 | `TALKEY_SUBMIT` | `0` | `1` presses Enter automatically after typing |
 | `TALKEY_STREAM` | `1` | `0` disables live transcription; the HUD still shows state and the meter |
