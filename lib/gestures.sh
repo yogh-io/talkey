@@ -91,3 +91,94 @@ gesture_release() {
     if (( EVENT_MS - ${pressed:-0} >= HOLD_MS )); then finish_dictation; fi
   fi
 }
+
+# Triangle bindings send presses only; key repeat is disabled by the bindings.
+submit_pending() {
+  SUBMIT_GESTURE="$(readlink -f "$STATE_DIR/submit.current" 2>/dev/null)"
+  [[ -d "$SUBMIT_GESTURE" && ! -f "$SUBMIT_GESTURE/done" && ! -f "$SUBMIT_GESTURE/cancelled" ]]
+}
+
+submit_fire() (
+  trap - EXIT
+  submit_pending || return 0
+  [[ "$SUBMIT_GESTURE" == "${TALKEY_SUBMIT_GESTURE:-}" ]] || return 0
+  local dir="$SUBMIT_GESTURE" kind take owner
+  : > "$dir/done"
+  rm -f "$STATE_DIR/submit.current"
+  kind="$(cat "$dir/kind")"; take="$(cat "$dir/take")"; owner="$(cat "$dir/owner")"
+  MODE=dictate
+  session_load dictate || true
+  case "$kind" in
+    take)
+      if [[ "$TAKE_DIR" == "$take" && ! -f "$take/auto.stopped" ]] && dictation_active; then cycle_submit; fi ;;
+    auto)
+      if auto_active && [[ "$AUTO_DIR" == "$owner" ]]; then
+        if dictation_active && [[ "$(cat "$TAKE_DIR/auto.owner" 2>/dev/null)" == "$owner" ]]; then cycle_submit
+        else
+          SUBMIT_REQ="$AUTO_DIR/submit.requested"; CANCEL_REQ="$AUTO_DIR/cancel.requested"
+          cycle_submit
+        fi
+      fi ;;
+    idle)
+      if ! auto_active && ! dictation_active; then capture_target && send_return; fi ;;
+  esac
+)
+
+submit_press() {
+  local dir pressed kind=idle take='' owner='' delay
+  if submit_pending; then
+    pressed="$(cat "$SUBMIT_GESTURE/pressed")"
+    if (( EVENT_MS - pressed <= DOUBLE_TAP_MS )); then
+      : > "$SUBMIT_GESTURE/cancelled"
+      rm -f "$STATE_DIR/submit.current"
+      local ACTION=enter-toggle
+      auto_enter_control
+      return
+    fi
+    local TALKEY_SUBMIT_GESTURE="$SUBMIT_GESTURE"
+    submit_fire
+  fi
+  MODE=dictate
+  session_load dictate || true
+  if dictation_active; then kind=take; take="$TAKE_DIR"
+  elif auto_active; then kind=auto; owner="$AUTO_DIR"; fi
+  dir="$(mktemp -d "$STATE_DIR/submit.XXXXXXXX")"
+  printf '%s\n' "$kind" > "$dir/kind"
+  printf '%s\n' "$take" > "$dir/take"
+  printf '%s\n' "$owner" > "$dir/owner"
+  printf '%s\n' "$EVENT_MS" > "$dir/pressed"
+  ln -s "$dir" "$STATE_DIR/submit.current.new-$$"
+  mv -Tf "$STATE_DIR/submit.current.new-$$" "$STATE_DIR/submit.current"
+  if (( DOUBLE_TAP_MS == 0 )); then
+    local TALKEY_SUBMIT_GESTURE="$dir"
+    submit_fire
+  else
+    delay="$(awk -v ms="$DOUBLE_TAP_MS" 'BEGIN {print ms/1000}')"
+    (
+      trap - EXIT
+      sleep "$delay"
+      [[ -d "$dir" && ! -f "$dir/cancelled" && ! -f "$dir/done" ]] || exit 0
+      TALKEY_SUBMIT_GESTURE="$dir" "$SCRIPT_DIR/talkey" _submit fire
+    ) 9>&- </dev/null >/dev/null 2>>"$STATE_DIR/log" &
+  fi
+}
+
+submit_settle() {
+  # A phrase can finish faster than the double-tap window. Resolve its pending
+  # triangle gesture before output, releasing the lock so a second tap can arrive.
+  local take="$TAKE_DIR" dir kind target owner pressed now
+  while submit_pending; do
+    dir="$SUBMIT_GESTURE"; kind="$(cat "$dir/kind")"
+    target="$(cat "$dir/take")"; owner="$(cat "$dir/owner")"
+    if [[ "$kind" == take && "$target" == "$take" ]] ||
+       [[ "$kind" == auto && "$owner" == "$(cat "$take/auto.owner" 2>/dev/null)" ]]; then
+      pressed="$(cat "$dir/pressed")"; now="$(now_ms)"
+      if (( now - pressed >= DOUBLE_TAP_MS )); then
+        local TALKEY_SUBMIT_GESTURE="$dir"
+        submit_fire
+      else
+        unlock_commands; sleep .01; lock_commands
+      fi
+    else break; fi
+  done
+}

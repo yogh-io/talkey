@@ -83,7 +83,7 @@
       (label :class "help-what" :halign "start" :text "dictate (${help.lang2})"))
     (box :class "help-row" :orientation "horizontal" :space-evenly false
       (label :class "help-key key-submit" :halign "start" :text {help.submit})
-      (label :class "help-what" :halign "start" :text "send after the dictation finishes"))
+      (label :class "help-what" :halign "start" :text "tap = send/cancel/plain  ·  double-tap = auto Enter"))
     (box :class "help-row" :orientation "horizontal" :space-evenly false
       (label :class "help-key key-memo" :halign "start" :text {help.memo})
       (label :class "help-what" :halign "start" :text "tap = translate  ·  double-tap = restart  ·  else memo"))

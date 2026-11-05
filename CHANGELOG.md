@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add double-Triangle to toggle persistent auto Enter. Double-Square keeps its manual recording restart behavior.
 - Make the dictate key finish an active auto phrase without disabling auto mode; a press during final transcription leaves the existing result alone.
 - Resolve double taps before starting manual recording, and add distinct auto-mode on/off sounds.
 - Switch auto mode off after a configurable idle interval (two minutes by default), without interrupting an unfinished phrase.

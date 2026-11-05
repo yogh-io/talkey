@@ -42,7 +42,7 @@ XF86Launch6
 @XF86Launch6
     talkey memo release
 
-# --- submit: Enter, or cycle the pending action mid-dictation ---
+# --- submit: single = Enter/action cycle; double = persistent auto Enter ---
 XF86Launch7
     talkey submit
 

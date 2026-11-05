@@ -340,6 +340,64 @@ os.execv({sys.executable!r}, [{sys.executable!r}]+sys.argv[1:])
         self.assertTrue(any(k[0] == 'type' for k in self.keys()))
         self.assertFalse(any(k[-1] == 'Return' for k in self.keys()))
 
+    def test_double_triangle_toggles_persistent_enter_without_single_action(self):
+        self.env['TALKEY_DOUBLE_TAP_MS'] = '1000'
+        for enabled in (True, False):
+            self.run_key('submit')
+            self.assertFalse(self.keys())
+            self.run_key('submit')
+            self.assertEqual(self.status()['enter_enabled'], enabled)
+        time.sleep(1.1)
+        self.assertFalse(self.keys())
+
+    def test_double_triangle_during_auto_phrase_does_not_cancel_it(self):
+        self.env['TALKEY_DOUBLE_TAP_MS'] = '1000'
+        self.listen()
+        take = self.speak()
+        self.run_key('submit')
+        self.run_key('submit')
+        self.assertTrue(self.status()['enter_enabled'])
+        self.assertFalse((take/'cancel.requested').exists())
+        self.end_phrase()
+        self.assertEqual(sum(k[-1] == 'Return' for k in self.keys()), 1)
+
+    def test_single_triangle_resolves_before_fast_final_output(self):
+        self.env['TALKEY_DOUBLE_TAP_MS'] = '500'
+        self.listen()
+        self.speak()
+        self.run_key('submit')
+        self.end_phrase()
+        self.assertEqual(sum(k[-1] == 'Return' for k in self.keys()), 1)
+        self.assertFalse(self.status()['enter_enabled'])
+
+    def test_double_triangle_during_final_inference_changes_enter_once(self):
+        self.env['TALKEY_DOUBLE_TAP_MS'] = '1000'
+        self.listen()
+        self.speak()
+        (self.root/'wait-inference').touch()
+        self.mute.touch()
+        self.wait_for(lambda: (self.root/'inference-started').exists())
+        self.run_key('submit')
+        self.run_key('submit')
+        (self.root/'wait-inference').unlink()
+        self.wait_for(lambda: self.status()['state'] == 'listening')
+        self.assertTrue(self.status()['enter_enabled'])
+        self.assertEqual(sum(k[-1] == 'Return' for k in self.keys()), 1)
+
+    def test_pending_triangle_cannot_undo_auto_stop_cancellation(self):
+        self.env['TALKEY_DOUBLE_TAP_MS'] = '1000'
+        self.listen()
+        self.speak()
+        (self.root/'wait-inference').touch()
+        self.mute.touch()
+        self.wait_for(lambda: (self.root/'inference-started').exists())
+        self.run_key('submit')
+        self.run_key('auto', 'stop')
+        time.sleep(1.1)
+        (self.root/'wait-inference').unlink()
+        self.wait_for(lambda: not (self.state/'dictate.pending').exists())
+        self.assertFalse(self.keys())
+
     def test_enter_preference_survives_a_fresh_runtime_directory(self):
         self.run_key('auto', 'enter-on')
         self.env['TALKEY_STATE_DIR'] = str(self.root/'fresh-runtime')

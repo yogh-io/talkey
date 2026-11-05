@@ -114,6 +114,13 @@ phrase cannot be finished accidentally. Auto mode has separate on/off tones and
 an idle timeout measured since the latest detected speech; active takes finish
 before this timeout can stop the worker.
 
+Triangle presses have a separate timer: one press retains the submit/cancel/plain
+cycle, while two presses toggle the persistent auto Enter preference without
+performing the single-press action. Finalizers resolve any applicable pending
+triangle gesture before output, releasing the lock while waiting for another tap.
+Its callback runs with isolated shell state so it cannot replace the finalizer's
+take paths if a newer take appears. Square retains the manual restart gesture.
+
 Archive conversion first reserves a private, unique temporary WAV. Only completed
 files become visible archive entries. Successful dictations also have a `.txt`
 sidecar, independent of whether live preview is enabled. Cancelled/restarted takes

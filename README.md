@@ -79,6 +79,13 @@ away) → plain (type, no Enter) → round again. Nothing commits mid-sentence, 
 you can tap, keep talking, and undo an accidental press by tapping again. The
 HUD shows what is currently pending.
 
+**Double-submit (Triangle)** toggles the persistent auto-mode Enter preference,
+just like the Polybar Enter control. The first tap waits
+for the double-tap window, so a double tap does not also send Enter or cycle the
+current phrase's submit/cancel state. Use separate single taps to cycle that state.
+This works while auto mode is off, waiting, recording, or transcribing. Square's
+double tap still restarts a manual recording.
+
 In auto mode, submit (triangle) uses that same cycle. While waiting for speech,
 it arms the next phrase instead of immediately pressing Enter. During speech or
 final transcription, it changes the current phrase. Each phrase then resets to

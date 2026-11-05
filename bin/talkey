@@ -6,7 +6,7 @@ MODE="${1:-}"; ACTION="${2:-}"
 case "$MODE/$ACTION" in
   --help/|-h/) printf '%s\n' "$USAGE"; exit 0 ;;
   dictate/press|dictate/release|dictate/start|dictate/stop|dictate-alt/press|dictate-alt/release|dictate-alt/start|dictate-alt/stop|memo/press|memo/release|memo/start|memo/stop|submit/|help/|doctor/) ;;
-  auto/start|auto/stop|auto/toggle|auto/status|auto/enter-on|auto/enter-off|auto/enter-toggle|_auto/begin|_auto/finish|_auto/error|_auto/idle|_gesture/fire) ;;
+  auto/start|auto/stop|auto/toggle|auto/status|auto/enter-on|auto/enter-off|auto/enter-toggle|_auto/begin|_auto/finish|_auto/error|_auto/idle|_gesture/fire|_submit/fire) ;;
   *) printf '%s\n' "$USAGE" >&2; exit 2 ;;
 esac
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"

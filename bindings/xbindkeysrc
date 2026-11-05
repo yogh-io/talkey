@@ -42,7 +42,7 @@
 "talkey memo release"
   Release + c:193
 
-# --- submit: Enter, or cycle the pending action mid-dictation ---
+# --- submit: single = Enter/action cycle; double = persistent auto Enter ---
 "talkey submit"
   c:192
 

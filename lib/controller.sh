@@ -72,6 +72,7 @@ finish_dictation() {
     fi
     lock_commands
   fi
+  submit_settle
   if [[ -f "$CANCEL_REQ" ]]; then
     if keep_cancelled "$RAW" "$MODE" "$(cat "$TRANSCRIPT" 2>/dev/null || true)"; then
       archived=1
@@ -163,16 +164,10 @@ main() {
     auto) auto_command ;;
     _auto) auto_event ;;
     _gesture) gesture_fire ;;
+    _submit) submit_fire ;;
     help)
       if [[ -f "$HELP_ON" ]]; then rm -f "$HELP_ON"; else : > "$HELP_ON"; fi ;;
-    submit)
-      MODE=dictate
-      session_load dictate || true
-      if dictation_active; then cycle_submit
-      elif auto_active; then
-        SUBMIT_REQ="$AUTO_DIR/submit.requested"; CANCEL_REQ="$AUTO_DIR/cancel.requested"
-        cycle_submit
-      else capture_target && send_return; fi ;;
+    submit) submit_press ;;
     memo)
       if [[ "$ACTION" == press ]]; then
         MODE=dictate
