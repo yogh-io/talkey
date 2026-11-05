@@ -79,7 +79,8 @@ finish_dictation() {
     else
       notify "cancelled - archive failed; audio kept at $RAW" 5000
     fi
-    overlay_state cancelled; overlay_body ' '; play_sound cancel
+    overlay_state cancelled; overlay_body ' '
+    [[ -f "$TAKE_DIR/auto.stopped" ]] || play_sound cancel
   else
     printf '%s\n' "$text" > "$FINAL_TEXT"
     if (( result == 1 )); then
@@ -118,7 +119,6 @@ restart_dictation() {
   pt="$(cat "$PRESSTIME")"
   record_stop quiet || return 1
   if keep_cancelled "$RAW" dictate "$(cat "$TRANSCRIPT" 2>/dev/null || true)"; then rm -f "$RAW"; fi
-  # Keep the press timestamp: a held key remains held across a restart.
   session_new
   LANG_CODE="$lang"; printf '%s\n' "$lang" > "$TAKE_DIR/language"
   printf '%s\n' "$pt" > "$PRESSTIME"
@@ -162,6 +162,7 @@ main() {
   case "$MODE" in
     auto) auto_command ;;
     _auto) auto_event ;;
+    _gesture) gesture_fire ;;
     help)
       if [[ -f "$HELP_ON" ]]; then rm -f "$HELP_ON"; else : > "$HELP_ON"; fi ;;
     submit)
@@ -193,28 +194,11 @@ main() {
       esac ;;
     dictate)
       session_load dictate || true
-      if auto_active; then
-        case "$ACTION" in press|stop) auto_stop ;; esac
-        return 0
-      fi
       case "$ACTION" in
-        press)
-          if recording_active; then
-            local pt; pt="$(cat "$PRESSTIME" 2>/dev/null || echo 0)"
-            if [[ -f "$TAKE_DIR/toggle.press" ]] && (( EVENT_MS - ${pt:-0} <= DOUBLE_TAP_MS )); then
-              auto_start
-            else finish_dictation; fi
-          else
-            begin_dictation
-            : > "$TAKE_DIR/toggle.press"
-          fi ;;
-        start) if ! recording_active; then begin_dictation; fi ;;
-        release)
-          if recording_active; then
-            local pt; pt="$(cat "$PRESSTIME" 2>/dev/null || echo 0)"
-            if (( EVENT_MS - ${pt:-0} >= HOLD_MS )); then finish_dictation; fi
-          fi ;;
-        stop) finish_dictation ;;
+        press) gesture_press ;;
+        release) gesture_release ;;
+        start) gesture_cancel; if ! auto_active && ! recording_active; then begin_dictation; fi ;;
+        stop) gesture_cancel; if auto_active; then auto_finish_or_stop; else finish_dictation; fi ;;
       esac ;;
   esac
 }

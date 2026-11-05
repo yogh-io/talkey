@@ -125,7 +125,7 @@ emit() {
   esac
   if [[ -f "$take/auto.owner" ]]; then
     if [[ "$footerkind" == plain ]]; then footertext="tap $L_SUBMIT send"; fi
-    footertext+="  ·  ${TALKEY_LABEL_DICTATE:-dictate} exits auto"
+    footertext+="  ·  ${TALKEY_LABEL_DICTATE:-dictate} finishes phrase"
   fi
   local tap=0 now
   [[ ! -s "$take/memo.presstime" ]] || tap="$(cat "$take/memo.presstime")"

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Make the dictate key finish an active auto phrase without disabling auto mode; a press during final transcription leaves the existing result alone.
+- Resolve double taps before starting manual recording, and add distinct auto-mode on/off sounds.
+- Switch auto mode off after a configurable idle interval (two minutes by default), without interrupting an unfinished phrase.
 - Cap typing time at two seconds (`TALKEY_TYPE_MAX_MS`): long messages type faster, short ones keep the per-character pace.
 - Fix the HUD level meter, which stayed empty since takes moved behind symlinks, and stop the HUD flickering when a take starts or ends.
 

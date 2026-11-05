@@ -99,6 +99,21 @@ before a manual recording is interrupted when enabling auto mode. The optional
 libraries are not imported in silence-only mode. The package ships the adapter,
 pinned feature extractor, requirements and licenses, but not model weights.
 
+The dictate key requests a finish using a marker in the current auto take. The
+capture worker closes that take and invokes the existing finalizer, retaining the
+Enter/cancellation policy and returning to listening. A press during finalization
+does not start a new take. While idle, the same key stops auto mode; explicit
+`auto stop` continues to cancel unfinished work.
+
+Dictate presses first create a pending gesture with a timestamp, language and
+intended take/run. A timer resolves a single press only after the double-tap
+window. A second press after a release cancels that gesture and toggles auto mode
+directly, without manual recorder/HUD side effects. Timer callbacks verify their
+gesture identity, and finish requests verify the captured take/run so a newer
+phrase cannot be finished accidentally. Auto mode has separate on/off tones and
+an idle timeout measured since the latest detected speech; active takes finish
+before this timeout can stop the worker.
+
 Archive conversion first reserves a private, unique temporary WAV. Only completed
 files become visible archive entries. Successful dictations also have a `.txt`
 sidecar, independent of whether live preview is enabled. Cancelled/restarted takes

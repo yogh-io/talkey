@@ -50,10 +50,19 @@ hands-free: tap once to start, again to stop. If you work in two languages, set
 **Auto listening** - double-tap the dictate key (X on your controller) within
 400 ms to keep listening in the background. Speech starts a phrase automatically;
 By default, 1.2 seconds of silence or microphone mute finishes it, types the result and
-returns to listening. Tap dictate once to turn auto mode off and cancel any
-unfinished phrase. Key releases do not stop auto mode. The double-tap interval
+returns to listening. Tap dictate during a phrase to finish it and
+keep auto mode enabled. Tapping during final transcription leaves that result
+alone. Tap while waiting for speech to turn auto mode off; `talkey auto stop`
+or the status-bar toggle also cancels an unfinished phrase. Double-tapping toggles
+auto mode without first starting a manual recording or finishing a phrase. Rising
+and falling two-note sounds identify auto mode turning on and off. Single-tap
+actions wait for the double-tap window (400 ms by default); when holding to talk,
+wait for the recording tone before speaking. Key releases do not stop auto mode. The double-tap interval
 and silence delay are configurable. Manual hold/toggle dictation still works.
 For long thinking pauses, enable the optional Smart Turn detector described below.
+Auto mode switches off after two minutes without speech, with the off sound.
+Set `TALKEY_AUTO_IDLE_S` to change this timeout, or `0` to disable it. An unfinished
+phrase or final transcription is allowed to finish before the idle timeout acts.
 
 **Memo / translate** - on its own, hold to record and release to play the clip
 straight back, so you can hear whether that came out right. During a dictation

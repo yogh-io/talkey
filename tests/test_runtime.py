@@ -50,7 +50,8 @@ class RuntimeTests(unittest.TestCase):
                         PATH=f'{self.commands}:{os.environ["PATH"]}',
                         TALKEY_STATE_DIR=str(self.state), TALKEY_CONFIG=str(self.root/'config'),
                         TALKEY_ARCHIVE_DIR=str(self.root/'archive'), TALKEY_ARCHIVE_TITLE='0',
-                        TALKEY_STREAM='0', TALKEY_SOUNDS='0', TALKEY_HOLD_MS='30')
+                        TALKEY_STREAM='0', TALKEY_SOUNDS='0', TALKEY_HOLD_MS='30',
+                        TALKEY_DOUBLE_TAP_MS='0', XDG_STATE_HOME=str(self.root/'persistent'))
         self.workers=[]
 
     def tearDown(self):

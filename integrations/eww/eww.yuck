@@ -88,7 +88,8 @@
       (label :class "help-key key-memo" :halign "start" :text {help.memo})
       (label :class "help-what" :halign "start" :text "tap = translate  ·  double-tap = restart  ·  else memo"))
     (label :class "help-note" :halign "start" :xalign 0
-           :text "hold to talk, tap to toggle, or double-tap for auto listening (tap to exit).
+           :text "hold to talk, tap to toggle, or double-tap to toggle auto listening.
+in auto: tap during speech to finish the phrase; tap while waiting to exit.
 mid-dictation, tap ${help.submit} to send when it finishes, or double-tap ${help.memo} to record the take again.
 name the keys on your own keyboard with TALKEY_LABEL_* in talkey.env.")))
 

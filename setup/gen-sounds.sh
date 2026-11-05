@@ -27,5 +27,16 @@ tone stop   587 0.12 0.78   # lower   -> captured
 tone submit 1319 0.09 0.64  # crisp   -> Enter sent
 tone cancel 300 0.16 0.64   # low     -> discarded
 
+# Two-note cues distinguish changing auto mode from starting/stopping a take.
+auto_tone() {
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "sine=frequency=$2:duration=0.09" \
+    -f lavfi -i "sine=frequency=$3:duration=0.12" \
+    -filter_complex '[0:a]afade=t=in:d=0.008,afade=t=out:st=0.07:d=0.02[a];[1:a]afade=t=in:d=0.008,afade=t=out:st=0.09:d=0.03[b];[a][b]concat=n=2:v=0:a=1,volume=5.12[out]' \
+    -map '[out]' -ac 1 -ar 48000 "$OUT/$1.wav"
+}
+auto_tone auto-on 660 990
+auto_tone auto-off 990 440
+
 echo "generated: $OUT"
 ls -1 "$OUT"

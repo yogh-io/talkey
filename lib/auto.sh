@@ -42,6 +42,7 @@ auto_enter_control() {
 }
 
 auto_start() {
+  gesture_cancel
   auto_active && return 0
   local python="${TALKEY_AUTO_PYTHON:-python3}"
   command -v "$python" >/dev/null || { echo "talkey auto: Python not found: $python" >&2; return 1; }
@@ -64,11 +65,14 @@ auto_start() {
   TALKEY_FFMPEG="$FFMPEG" TALKEY_SOURCE="$AUDIO_SOURCE" TALKEY_MAX_REC_S="$MAX_REC_S" \
     "$python" "$SCRIPT_DIR/talkey-auto-worker" 9>&- </dev/null >>"$STATE_DIR/log" 2>&1 &
   process_save "$!" "$AUTO_DIR/worker.pid" || { auto_state error; return 1; }
-  notify 'auto listening on - tap dictate to stop'
+  play_sound auto-on
+  notify 'auto listening on - double-tap dictate to switch off'
 }
 
 auto_stop() {
+  gesture_cancel
   auto_load || return 0
+  local previous; previous="$(cat "$AUTO_DIR/state" 2>/dev/null || echo off)"
   # Invalidate callbacks before stopping capture or a blocked worker.
   auto_state off
   process_stop "$AUTO_DIR/worker.pid" || return 1
@@ -76,10 +80,27 @@ auto_stop() {
   MODE=dictate
   if session_load dictate && [[ "$(cat "$TAKE_DIR/auto.owner" 2>/dev/null)" == "$AUTO_DIR" ]]; then
     # Stopping auto mode cancels its unfinished take, including in-flight inference.
+    : > "$TAKE_DIR/auto.stopped"
     : > "$CANCEL_REQ"
     if [[ -f "$PIDFILE" ]]; then finish_dictation; fi
   fi
   notify 'auto listening off'
+  [[ "$previous" == off ]] || play_sound auto-off
+}
+
+auto_finish_or_stop() {
+  # The capture worker owns the audio boundary. Request a finish on this take
+  # instead of starting another recorder or cancelling the continuous listener.
+  if session_load dictate && dictation_active &&
+     [[ "$(cat "$TAKE_DIR/auto.owner" 2>/dev/null)" == "$AUTO_DIR" ]]; then
+    if recording_active; then
+      : > "$TAKE_DIR/finish.requested"
+      notify 'finishing phrase'
+    fi
+    # Already transcribing: leave the one existing finalizer in charge.
+    return 0
+  fi
+  auto_stop
 }
 
 auto_command() {
@@ -117,6 +138,10 @@ auto_event() {
   [[ "${TALKEY_AUTO_RUN:-}" == "$AUTO_DIR" && "$(cat "$AUTO_DIR/state")" != off ]] || return 1
   MODE=dictate
   case "$ACTION" in
+    idle)
+      auto_state off
+      play_sound auto-off
+      notify 'auto listening off - idle timeout' ;;
     begin)
       session_load dictate || true
       dictation_active && return 1

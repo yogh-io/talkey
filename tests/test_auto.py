@@ -52,7 +52,7 @@ class AutoRuntimeTests(unittest.TestCase):
         self.env.update(TALKEY_VAD_START_MS='64', TALKEY_VAD_SILENCE_MS='160',
                         TALKEY_SMART_TURN='0', TALKEY_AUTO_PYTHON='python3',
                         XDG_STATE_HOME=str(self.root/'persistent'),
-                        TALKEY_DOUBLE_TAP_MS='2000', TALKEY_HOLD_MS='2000')
+                        TALKEY_DOUBLE_TAP_MS='0', TALKEY_HOLD_MS='2000')
         self.mute = self.root/'mute'
         self.mute.touch()
         recorder = FAKE.replace("b'\\0\\1'*1600", "(b'\\0\\0' if (root/'mute').exists() else b'\\0\\1')*512")
@@ -141,6 +141,35 @@ os.execv({sys.executable!r}, [{sys.executable!r}]+sys.argv[1:])
         self.wait_for(lambda: self.status()['state'] == 'listening')
         self.assertEqual(sum(k[0] == 'type' for k in self.keys()), 1)
 
+    def test_dictate_key_finishes_paused_phrase_and_keeps_auto_enabled(self):
+        (self.root/'turn-incomplete').touch()
+        self.run_key('auto', 'enter-on')
+        self.smart_listen(maximum='20000')
+        take = self.speak()
+        self.mute.touch()
+        self.wait_for(lambda: self.status()['state'] == 'paused')
+        self.run_key('dictate', 'press')
+        self.run_key('dictate', 'release')
+        self.wait_for(lambda: self.status()['state'] == 'listening')
+        self.assertEqual(json.loads((take/'turn.json').read_text())['reason'], 'manual')
+        self.assertTrue(self.status()['enabled'])
+        self.assertEqual(sum(k[0] == 'type' for k in self.keys()), 1)
+        self.assertEqual(sum(k[-1] == 'Return' for k in self.keys()), 1)
+
+    def test_dictate_key_during_final_inference_does_not_start_or_cancel(self):
+        self.listen()
+        take = self.speak()
+        (self.root/'wait-inference').touch()
+        self.mute.touch()
+        self.wait_for(lambda: (self.root/'inference-started').exists())
+        self.run_key('dictate', 'press')
+        self.run_key('dictate', 'release')
+        self.assertEqual(take, (self.state/'dictate.current').resolve())
+        self.assertTrue(self.status()['enabled'])
+        (self.root/'wait-inference').unlink()
+        self.wait_for(lambda: self.status()['state'] == 'listening')
+        self.assertEqual(sum(k[0] == 'type' for k in self.keys()), 1)
+
     def test_speech_resuming_during_turn_inference_invalidates_completion(self):
         (self.root/'turn-wait').touch()
         self.smart_listen()
@@ -217,15 +246,19 @@ os.execv({sys.executable!r}, [{sys.executable!r}]+sys.argv[1:])
         self.assertEqual(sum(k[-1] == 'Return' for k in self.keys()), 1)
 
     def test_double_tap_enables_single_tap_disables(self):
+        self.env['TALKEY_DOUBLE_TAP_MS'] = '2000'
         self.run_key('dictate', 'press')
+        self.assertFalse((self.state/'dictate.current').exists())
         self.run_key('dictate', 'release')
         self.run_key('dictate', 'press')
         self.run_key('dictate', 'release')
         self.wait_for(lambda: self.status()['state'] == 'listening')
         self.assertTrue(self.status()['enabled'])
         self.assertFalse(self.keys())
+        self.assertFalse((self.state/'dictate.current').exists())
         self.run_key('dictate', 'press')
-        self.assertEqual(self.status()['state'], 'off')
+        self.run_key('dictate', 'release')
+        self.wait_for(lambda: self.status()['state'] == 'off')
         self.assertFalse(self.status()['enabled'])
 
     def test_stop_cancels_speech_without_output(self):
@@ -382,13 +415,91 @@ os.execv({sys.executable!r}, [{sys.executable!r}]+sys.argv[1:])
         self.assertFalse((self.state/'dictate.current').exists())
 
     def test_detector_failure_keeps_manual_recording(self):
-        self.run_key('dictate', 'press')
+        self.run_key('dictate', 'start')
         take = (self.state/'dictate.current').resolve()
         (self.root/'fail-vad').touch()
-        result = self.run_key('dictate', 'press', check=False)
+        result = self.run_key('auto', 'start', check=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue((take/'dictate.pid').exists())
         self.assertEqual(self.status()['state'], 'off')
+        self.run_key('dictate', 'stop')
+
+    def enable_sounds(self):
+        player = self.commands/'player'
+        player.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "$TEST_ROOT/sounds"\n')
+        player.chmod(0o755)
+        self.env.update(TALKEY_SOUNDS='1', TALKEY_PLAYER=str(player))
+
+    def test_double_tap_only_toggles_auto_with_distinct_tones(self):
+        self.env['TALKEY_DOUBLE_TAP_MS'] = '2000'
+        self.enable_sounds()
+        for expected in ('listening', 'off'):
+            self.run_key('dictate', 'press')
+            self.run_key('dictate', 'release')
+            self.run_key('dictate', 'press')
+            self.run_key('dictate', 'release')
+            self.wait_for(lambda: self.status()['state'] == expected)
+            self.assertFalse((self.state/'dictate.current').exists())
+        self.wait_for(lambda: (self.root/'sounds').exists() and len((self.root/'sounds').read_text().splitlines()) == 2)
+        self.assertEqual([Path(p).stem for p in (self.root/'sounds').read_text().splitlines()], ['auto-on', 'auto-off'])
+        time.sleep(2.1)  # Neither cancelled single-tap timer may start a take later.
+        self.assertFalse((self.state/'dictate.current').exists())
+
+    def test_idle_timeout_stops_with_off_tone_and_does_not_interrupt_speech(self):
+        self.enable_sounds()
+        self.env['TALKEY_AUTO_IDLE_S'] = '1'
+        self.listen()
+        self.speak()
+        time.sleep(1.1)
+        self.assertTrue(self.status()['enabled'])
+        self.end_phrase()
+        self.wait_for(lambda: not self.status()['enabled'])
+        self.assertEqual(self.status()['state'], 'off')
+        self.wait_for(lambda: 'auto-off.wav' in (self.root/'sounds').read_text())
+        self.assertEqual(sum(k[0] == 'type' for k in self.keys()), 1)
+
+    def test_double_tap_during_speech_does_not_finish_or_send_first(self):
+        self.env['TALKEY_DOUBLE_TAP_MS'] = '2000'
+        self.enable_sounds()
+        self.listen()
+        take = self.speak()
+        self.run_key('dictate', 'press')
+        self.run_key('dictate', 'release')
+        self.assertFalse((take/'finish.requested').exists())
+        self.run_key('dictate', 'press')
+        self.run_key('dictate', 'release')
+        self.assertFalse(self.status()['enabled'])
+        self.assertFalse(self.keys())
+        self.wait_for(lambda: 'auto-off.wav' in (self.root/'sounds').read_text())
+        self.assertEqual([Path(p).stem for p in (self.root/'sounds').read_text().splitlines()], ['auto-on', 'auto-off'])
+
+    def test_idle_timeout_can_be_disabled(self):
+        self.env['TALKEY_AUTO_IDLE_S'] = '0'
+        self.listen()
+        time.sleep(.4)
+        self.assertTrue(self.status()['enabled'])
+
+    def test_idle_timeout_drains_speech_captured_during_slow_finalization(self):
+        self.env['TALKEY_AUTO_IDLE_S'] = '1'
+        self.listen()
+        self.speak()
+        (self.root/'wait-inference').touch()
+        self.mute.touch()
+        self.wait_for(lambda: (self.root/'inference-started').exists())
+        self.mute.unlink()
+        time.sleep(.25)
+        self.mute.touch()
+        time.sleep(1.1)
+        (self.root/'wait-inference').unlink()
+        self.wait_for(lambda: sum(k[0] == 'type' for k in self.keys()) == 2)
+
+    def test_single_tap_waits_then_starts_manual_recording(self):
+        self.env['TALKEY_DOUBLE_TAP_MS'] = '300'
+        self.run_key('dictate', 'press')
+        self.run_key('dictate', 'release')
+        self.assertFalse((self.state/'dictate.current').exists())
+        self.wait_for(lambda: (self.state/'dictate.pid').exists())
+        self.assertFalse(self.status()['enabled'])
         self.run_key('dictate', 'stop')
 
     def test_transcription_failure_stops_auto_and_never_sends(self):
