@@ -50,7 +50,7 @@ class AutoRuntimeTests(unittest.TestCase):
     def setUp(self):
         runtime.RuntimeTests.setUp(self)
         self.env.update(TALKEY_VAD_START_MS='64', TALKEY_VAD_SILENCE_MS='160',
-                        TALKEY_SMART_TURN='0', TALKEY_AUTO_PYTHON='python3',
+                        TALKEY_SMART_TURN='0', TALKEY_AUTO_PYTHON='python3', TALKEY_END_PHRASE='',
                         XDG_STATE_HOME=str(self.root/'persistent'),
                         TALKEY_DOUBLE_TAP_MS='0', TALKEY_HOLD_MS='2000')
         self.mute = self.root/'mute'
@@ -59,6 +59,8 @@ class AutoRuntimeTests(unittest.TestCase):
         recorder = recorder.replace('while True:\n',
                                     "(root/'capture.pid').write_text(str(os.getpid()))\n        while True:\n            if (root/'stall').exists(): time.sleep(.03); continue\n")
         (self.commands/'ffmpeg').write_text(recorder)
+        (self.commands/'curl').write_text(FAKE.replace("else 'hello world'",
+            "else ((root/'final-text').read_text() if (root/'final-text').exists() else 'hello world')"))
         # Replace only the detector at the process boundary. Production capture,
         # buffering, segmentation and all controller code still run unchanged.
         wrapper = self.commands/'python3'
@@ -78,6 +80,17 @@ if sys.argv[1].endswith('/talkey-auto-worker'):
             while (root/'turn-wait').exists(): time.sleep(.01)
             if (root/'turn-fail').exists(): raise RuntimeError('test turn inference failed')
             return probability
+    class FakeCue(ns['EndCue']):
+        def __init__(self, phrase): self.phrase=phrase
+        def matches(self, pcm):
+            root=pathlib.Path(os.environ['TEST_ROOT'])
+            (root/'cue-started').touch()
+            text=(root/'cue-text').read_text() if (root/'cue-text').exists() else ''
+            while (root/'cue-wait').exists(): time.sleep(.01)
+            if (root/'cue-fail').exists(): raise RuntimeError('test cue failure')
+            ns['EndCue'].matches.__globals__['transcribe']=lambda *args: text
+            return super().matches(pcm)
+    ns['main'].__globals__['EndCue']=FakeCue
     ns['main'].__globals__['Silero']=FakeVad
     ns['main'].__globals__['load_turn']=lambda: FakeTurn() if os.environ.get('TALKEY_SMART_TURN')=='1' else None
     sys.argv=sys.argv[1:]
@@ -141,6 +154,11 @@ os.execv({sys.executable!r}, [{sys.executable!r}]+sys.argv[1:])
         self.wait_for(lambda: self.status()['state'] == 'listening')
         self.assertEqual(sum(k[0] == 'type' for k in self.keys()), 1)
 
+    def cue_listen(self):
+        self.env.update(TALKEY_END_PHRASE='end message', TALKEY_END_PHRASE_SILENCE_MS='160')
+        (self.root/'turn-incomplete').touch()
+        self.smart_listen(maximum='20000')
+
     def test_dictate_key_finishes_paused_phrase_and_keeps_auto_enabled(self):
         (self.root/'turn-incomplete').touch()
         self.run_key('auto', 'enter-on')
@@ -169,6 +187,64 @@ os.execv({sys.executable!r}, [{sys.executable!r}]+sys.argv[1:])
         (self.root/'wait-inference').unlink()
         self.wait_for(lambda: self.status()['state'] == 'listening')
         self.assertEqual(sum(k[0] == 'type' for k in self.keys()), 1)
+
+    def test_end_cue_overrides_incomplete_turn_and_follows_enter_toggle(self):
+        self.cue_listen()
+        for enter in (False, True):
+            self.run_key('auto', 'enter-on' if enter else 'enter-off')
+            (self.root/'cue-text').write_text('Please execute it yourself. End message.')
+            (self.root/'final-text').write_text('Please execute it yourself. End message.')
+            take = self.speak()
+            self.end_phrase()
+            self.assertEqual((take/'final.txt').read_text().strip(), 'Please execute it yourself.')
+            self.assertEqual(json.loads((take/'turn.json').read_text())['reason'], 'end_cue')
+        self.assertEqual(sum(k[0] == 'type' for k in self.keys()), 2)
+        self.assertEqual(sum(k[-1] == 'Return' for k in self.keys()), 1)
+
+    def test_cue_alone_never_types_or_presses_enter(self):
+        self.run_key('auto', 'enter-on')
+        self.cue_listen()
+        (self.root/'cue-text').write_text('End message.')
+        (self.root/'final-text').write_text('End message.')
+        self.speak()
+        self.end_phrase()
+        self.assertFalse(self.keys())
+
+    def test_speech_resuming_invalidates_pending_cue(self):
+        self.cue_listen()
+        (self.root/'cue-text').write_text('End message.')
+        (self.root/'cue-wait').touch()
+        take = self.speak()
+        self.mute.touch()
+        self.wait_for(lambda: (self.root/'cue-started').exists())
+        self.assertEqual(self.speak(), take)
+        (self.root/'cue-text').write_text('I was just describing end message as a phrase')
+        (self.root/'cue-wait').unlink()
+        self.mute.touch()
+        self.wait_for(lambda: self.status()['state'] == 'paused')
+        time.sleep(.3)
+        self.assertFalse(self.keys())
+        self.run_key('dictate', 'press')
+        self.wait_for(lambda: self.status()['state'] == 'listening')
+
+    def test_cue_request_failure_leaves_phrase_open_for_manual_finish(self):
+        self.cue_listen()
+        (self.root/'cue-fail').touch()
+        self.speak()
+        self.mute.touch()
+        self.wait_for(lambda: (self.root/'cue-started').exists())
+        time.sleep(.3)
+        self.assertTrue(self.status()['enabled'])
+        self.assertFalse(self.keys())
+        self.run_key('dictate', 'press')
+        self.wait_for(lambda: self.status()['state'] == 'listening')
+
+    def test_end_cue_is_literal_in_manual_dictation(self):
+        self.env['TALKEY_END_PHRASE'] = 'end message'
+        (self.root/'final-text').write_text('The words end message')
+        self.run_key('dictate', 'start')
+        self.run_key('dictate', 'stop')
+        self.assertEqual([k[-1] for k in self.keys() if k[0] == 'type'], ['The words end message'])
 
     def test_speech_resuming_during_turn_inference_invalidates_completion(self):
         (self.root/'turn-wait').touch()

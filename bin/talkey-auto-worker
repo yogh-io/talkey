@@ -26,6 +26,13 @@ FRAME_SAMPLES = 512
 FRAME_MS = 32
 FRAME_BYTES = FRAME_SAMPLES * 2
 
+for data in (Path(os.environ.get('TALKEY_DATA_DIR', '/nonexistent')),
+             Path(__file__).resolve().parent.parent, Path('/usr/share/talkey')):
+    if (data / 'lib/speech.py').is_file():
+        sys.path.insert(0, str(data / 'lib'))
+        break
+from speech import strip_end_cue, transcribe
+
 
 def setting(name, default, minimum, maximum):
     value = float(os.environ.get('TALKEY_' + name, default))
@@ -152,6 +159,16 @@ def stop_requested(*_):
     raise StopRequested()
 
 
+class EndCue:
+    def __init__(self, phrase):
+        self.phrase = phrase
+
+    def matches(self, pcm):
+        text = transcribe(pcm, os.environ.get('TALKEY_WHISPER_URL', 'http://127.0.0.1:8910/inference'),
+                          os.environ.get('TALKEY_LANG', 'en'), self.phrase, 16000, 1)
+        return strip_end_cue(text, self.phrase) is not None
+
+
 class Listener:
     def __init__(self, vad, turn=None):
         self.vad = vad
@@ -176,6 +193,16 @@ class Listener:
         self.prediction_revision = -1
         self.probability = None
         self.display_state = None
+        phrase = os.environ.get('TALKEY_END_PHRASE', '').strip()
+        if phrase and strip_end_cue(phrase, phrase) is None:
+            raise ValueError('TALKEY_END_PHRASE must contain words')
+        self.cue = EndCue(phrase) if phrase else None
+        self.cue_executor = ThreadPoolExecutor(max_workers=1) if self.cue else None
+        self.cue_audio = deque(maxlen=math.ceil(8000 / FRAME_MS))
+        self.cue_prediction = None
+        self.cue_checked_revision = self.cue_prediction_revision = -1
+        self.cue_matched_revision = -1
+        self.cue_quiet_frames = math.ceil(setting('END_PHRASE_SILENCE_MS', '600', 160, 10000) / FRAME_MS)
         self.idle_seconds = setting('AUTO_IDLE_S', '120', 0, 86400)
         # Include all onset frames plus 300 ms before them.
         self.preroll = deque(maxlen=math.ceil((start + 300) / FRAME_MS))
@@ -234,10 +261,34 @@ class Listener:
         self.take = None
         self.preroll.clear()
         self.turn_audio.clear()
+        self.cue_audio.clear()
         self.endpoint.reset()
         self.revision += 1
         self.probability = None
         self.state('listening')
+
+    def check_cue(self):
+        if self.cue_prediction and self.cue_prediction.done():
+            prediction = self.cue_prediction
+            self.cue_prediction = None
+            if self.cue_prediction_revision == self.revision and self.output:
+                try:
+                    matched = prediction.result()
+                except Exception as error:
+                    # A failed optional cue check cannot invent an endpoint.
+                    print(f'talkey auto: end cue check failed: {error}', file=sys.stderr)
+                else:
+                    if matched:
+                        self.cue_matched_revision = self.revision
+        if (self.output and self.cue_matched_revision == self.revision
+                and self.endpoint.quiet >= self.cue_quiet_frames and self.frames.empty()):
+            self.turn_decision('end_cue')
+            self.finish()
+            return
+        if (self.output and self.endpoint.quiet >= self.cue_quiet_frames
+                and self.cue_checked_revision != self.revision and self.cue_prediction is None):
+            self.cue_checked_revision = self.cue_prediction_revision = self.revision
+            self.cue_prediction = self.cue_executor.submit(self.cue.matches, b''.join(self.cue_audio))
 
     def turn_decision(self, reason):
         if self.take:
@@ -329,6 +380,8 @@ class Listener:
             event = self.endpoint.update(speech)
             if self.output:
                 self.output.write(frame)
+                if self.cue:
+                    self.cue_audio.append(frame)
                 if self.turn:
                     self.turn_audio.append(frame)
             else:
@@ -339,6 +392,8 @@ class Listener:
                 self.output.write(b''.join(self.preroll))
                 if self.turn:
                     self.turn_audio.extend(self.preroll)
+                if self.cue:
+                    self.cue_audio.extend(self.preroll)
                 self.preroll.clear()
                 self.state('speaking')
             elif event == 'end':
@@ -347,6 +402,8 @@ class Listener:
                 self.finish()
             if self.turn:
                 self.check_turn()
+            if self.cue:
+                self.check_cue()
 
     def close(self):
         self.stopping.set()
@@ -354,6 +411,8 @@ class Listener:
             self.output.close()
         if self.executor:
             self.executor.shutdown(wait=False, cancel_futures=True)
+        if self.cue_executor:
+            self.cue_executor.shutdown(wait=False, cancel_futures=True)
         if self.capture:
             self.capture.terminate()
             try:
@@ -400,6 +459,10 @@ def main():
         setting('VAD_THRESHOLD', '0.5', .01, .99)
         setting('MAX_REC_S', '900', 1, 86400)
         setting('AUTO_IDLE_S', '120', 0, 86400)
+        setting('END_PHRASE_SILENCE_MS', '600', 160, 10000)
+        phrase = os.environ.get('TALKEY_END_PHRASE', '').strip()
+        if phrase and strip_end_cue(phrase, phrase) is None:
+            raise ValueError('TALKEY_END_PHRASE must contain words')
         vad = Silero()
         turn = load_turn()
         if not args.check:

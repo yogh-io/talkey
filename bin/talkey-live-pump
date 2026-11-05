@@ -6,7 +6,6 @@ request, and recorder identity is checked again before publishing a response.
 Only the Python standard library is required.
 """
 import argparse
-import io
 import os
 from pathlib import Path
 import re
@@ -16,8 +15,14 @@ import time
 import traceback
 import urllib.error
 import urllib.request
-import uuid
-import wave
+
+
+for data in (Path(os.environ.get('TALKEY_DATA_DIR', '/nonexistent')),
+             Path(__file__).resolve().parent.parent, Path('/usr/share/talkey')):
+    if (data / 'lib/speech.py').is_file():
+        sys.path.insert(0, str(data / 'lib'))
+        break
+from speech import transcribe, wav_bytes
 
 
 class StopRequested(Exception):
@@ -51,33 +56,6 @@ class Agreement:
             return " ".join(self.shown)
         return None
 
-
-def wav_bytes(pcm, sample_rate=16000, channels=1):
-    output = io.BytesIO()
-    with wave.open(output, "wb") as wav:
-        wav.setnchannels(channels)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        wav.writeframes(pcm[:len(pcm) // (2 * channels) * (2 * channels)])
-    return output.getvalue()
-
-
-def transcribe(pcm, url, language, prompt, sample_rate, channels):
-    boundary = uuid.uuid4().hex
-    fields = {"language": language, "temperature": "0", "response_format": "text"}
-    if prompt:
-        fields["prompt"] = prompt
-    parts = []
-    for key, value in fields.items():
-        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode())
-    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n'.encode())
-    parts += [wav_bytes(pcm, sample_rate, channels), f'\r\n--{boundary}--\r\n'.encode()]
-    request = urllib.request.Request(url, data=b"".join(parts), headers={
-        "Content-Type": f"multipart/form-data; boundary={boundary}"})
-    with urllib.request.urlopen(request, timeout=20) as response:
-        text = response.read().decode("utf-8")
-    text = re.sub(r"\[[^\]]*\]|\*[^*]*\*", "", text)
-    return re.sub(r"\s+", " ", text).strip()
 
 
 def recorder_identity(pidfile):

@@ -67,6 +67,9 @@ finish_dictation() {
       result=1
     elif ! text="$(stt "$WAV")"; then
       result=1
+    elif [[ -f "$TAKE_DIR/auto.owner" && -n "${TALKEY_END_PHRASE:-}" ]] &&
+         ! text="$(printf '%s' "$text" | "${TALKEY_AUTO_PYTHON:-python3}" "$DATA_DIR/lib/speech.py" strip-cue "$TALKEY_END_PHRASE")"; then
+      result=1
     elif [[ -z "$text" ]]; then
       result=2
     fi

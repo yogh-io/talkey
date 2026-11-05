@@ -164,6 +164,28 @@ Model and preprocessing sources: [Smart Turn](https://github.com/pipecat-ai/smar
 [pinned model revision](https://huggingface.co/pipecat-ai/smart-turn-v3/tree/f766f81d3cfdf7737ac64aad813d91bbfd56bf93),
 and [vendored feature extraction/licensing](lib/vendor/README.md).
 
+### Explicitly finishing a phrase
+
+Set `TALKEY_END_PHRASE="message complete"` in `talkey.env` and restart auto mode to
+enable a spoken ending cue. Say your message, then “message complete,” then pause.
+After 600 ms of silence, Talkey transcribes a snapshot of the last eight seconds
+in the background. If its last words match the cue, the phrase finishes without
+waiting for Smart Turn. Capture continues during this check; resumed speech
+invalidates an older cue result. This also works with live HUD transcription disabled.
+
+The usual full transcription still supplies the final text. A matching ending
+cue is removed from it; the current Enter toggle decides whether to submit.
+Saying only the cue produces neither text nor Enter. The cue is removed only
+in auto mode, and only as an exact word suffix, ignoring case and punctuation.
+If final transcription no longer contains it, that text is retained unchanged.
+
+This is an explicit convention, not an intent classifier: naturally ending a
+sentence with those same words will also match. A cue in the middle of a sentence
+does not match. Recognition errors can miss the cue; tapping the dictate key
+finishes the current phrase independently of speech recognition. Clear
+`TALKEY_END_PHRASE` to disable the feature. `TALKEY_END_PHRASE_SILENCE_MS` adjusts
+the pause before checking. Cue-request failures leave normal turn detection active.
+
 ### External status bars
 
 The executable exposes commands for a separate Polybar module or another client:

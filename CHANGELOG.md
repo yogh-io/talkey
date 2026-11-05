@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add an optional “message complete” cue, checked during pauses without waiting for semantic completion. The final text excludes the cue and follows the Enter setting.
 - Add double-Triangle to toggle persistent auto Enter. Double-Square keeps its manual recording restart behavior.
 - Make the dictate key finish an active auto phrase without disabling auto mode; a press during final transcription leaves the existing result alone.
 - Resolve double taps before starting manual recording, and add distinct auto-mode on/off sounds.

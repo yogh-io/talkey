@@ -99,6 +99,15 @@ before a manual recording is interrupted when enabling auto mode. The optional
 libraries are not imported in silence-only mode. The package ships the adapter,
 pinned feature extractor, requirements and licenses, but not model weights.
 
+An optional `TALKEY_END_PHRASE` adds a separate bounded Whisper cue check after
+a short pause. It uses the same HTTP/WAV helpers as the live pump, but does not
+depend on the live preview or its duration cap. A background request receives
+at most eight seconds of audio. Matching requires a complete word suffix; capture
+revisions invalidate stale results and queued audio is drained before finishing.
+Request failures leave the normal endpoint policy in charge. Final transcription
+independently strips a matching cue before desktop output; an empty result never
+presses Enter. Manual dictation does not strip cue text.
+
 The dictate key requests a finish using a marker in the current auto take. The
 capture worker closes that take and invokes the existing finalizer, retaining the
 Enter/cancellation policy and returning to listening. A press during finalization

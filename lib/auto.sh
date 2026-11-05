@@ -63,6 +63,7 @@ auto_start() {
   auto_state starting
   TALKEY_STATE_DIR="$STATE_DIR" TALKEY_DATA_DIR="$DATA_DIR" TALKEY_AUTO_RUN="$AUTO_DIR" TALKEY_LANG="$LANG_CODE" \
   TALKEY_FFMPEG="$FFMPEG" TALKEY_SOURCE="$AUDIO_SOURCE" TALKEY_MAX_REC_S="$MAX_REC_S" \
+  TALKEY_WHISPER_URL="$WHISPER_URL" \
     "$python" "$SCRIPT_DIR/talkey-auto-worker" 9>&- </dev/null >>"$STATE_DIR/log" 2>&1 &
   process_save "$!" "$AUTO_DIR/worker.pid" || { auto_state error; return 1; }
   play_sound auto-on

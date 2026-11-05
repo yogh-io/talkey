@@ -179,7 +179,7 @@ pkgdir="$2"; srcdir="$3"; cd "$srcdir"; package
         result=self.shell(script,stage,source)
         self.assertEqual(result.returncode,0,result.stderr)
         for name in ['controller.sh','session.sh','auto.sh','setup/keys.sh','config.sh','whisper.sh','hud.sh',
-                     'smart_turn.py','gestures.sh',
+                     'smart_turn.py','speech.py','gestures.sh',
                      'vendor/smart_turn_features.py','vendor/LICENSE.pipecat',
                      'vendor/LICENSE.transformers']:
             self.assertTrue((stage/'usr/share/talkey/lib'/name).is_file(),name)
