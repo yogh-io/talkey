@@ -23,6 +23,7 @@ if name=='ffmpeg':
         pathlib.Path(args[-1]).write_bytes(pathlib.Path(args[args.index('-i')+1]).read_bytes())
 elif name=='curl':
     if '-o' in args: sys.exit(0)
+    with (root/'curl-args').open('a') as f: f.write(json.dumps(args)+'\n')
     (root/'inference-started').touch()
     while (root/'wait-inference').exists(): time.sleep(.01)
     if (root/'fail-http').exists(): sys.exit(22)
@@ -96,6 +97,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(list((self.root/'archive').glob('*.wav'))),1)
         self.assertEqual(len(list((self.root/'archive').glob('*.txt'))),1)
         self.assertFalse((take/'dictate.pending').exists())
+
+    def test_context_is_dropped_only_without_a_prompt(self):
+        def fields():
+            args=json.loads((self.root/'curl-args').read_text().splitlines()[-1])
+            return [args[i+1] for i,arg in enumerate(args) if arg=='-F']
+        vocabulary=self.root/'vocabulary.txt'; vocabulary.write_text('SonarQube\n')
+        self.env['TALKEY_PROMPT_FILE']=str(vocabulary)
+        self.start(); self.run_key('dictate','stop')
+        self.assertIn('prompt=SonarQube',fields())
+        self.assertNotIn('max_context=0',fields())
+        self.env['TALKEY_VOCAB_MAX_S']='0'
+        self.start(); self.run_key('dictate','stop')
+        self.assertIn('max_context=0',fields())
+        self.assertFalse(any(field.startswith('prompt=') for field in fields()))
 
     def test_long_text_types_within_cap(self):
         def delay():

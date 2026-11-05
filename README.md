@@ -555,6 +555,13 @@ the sentence depended on.
 So `talkey-whisper-server` does not pass it, and `talkey doctor` says so if the
 server you are running does.
 
+whisper also feeds its own text into the next window. After a pause, that can
+make it copy one sentence over and over, on top of the real speech that follows.
+Nothing reports this either: one 162 second dictation lost 58 seconds of speech
+that way. So takes too long for the vocabulary prompt are sent with
+`max_context=0`. Short takes keep the context, because the prompt travels
+through it.
+
 The practical limits are elsewhere, and both are yours to set:
 
 - `TALKEY_MAX_REC_S` (default 900) stops the recording itself, so a stuck key

@@ -49,7 +49,9 @@ stt() {
     # SHORT English dictations, where turbo applies it cleanly; long-form and
     # non-English stay raw. See VOCAB_MAX_S.
     [[ "$VOCAB_PROMPT" == "1" && -n "$PROMPT" && "$LANG_CODE" == "en" && "$secs" -lt "$VOCAB_MAX_S" ]] && use_prompt=1
-    (( use_prompt )) && args+=(-F "prompt=$PROMPT")
+    # Rolling context lets whisper loop one sentence over real speech, but the
+    # prompt travels through it too, so only takes without a prompt can drop it.
+    if (( use_prompt )); then args+=(-F "prompt=$PROMPT"); else args+=(-F max_context=0); fi
     # verbose_json carries avg_logprob but needs jq to parse. Without jq, fall back
     # to plain text - the transcript still works, just with no confidence number.
     if command -v jq >/dev/null 2>&1; then
