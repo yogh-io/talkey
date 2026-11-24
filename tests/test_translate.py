@@ -109,7 +109,7 @@ class AgreementTests(unittest.TestCase):
         agreement.offer(['Hallo', 'allemaal'], 'Hello everyone', -9)
         self.assertEqual(agreement.decision, {'result': 'unsettled', 'piece': None})
         agreement.offer('Hallo allemaal ik deel'.split(), 'Hello everyone, I am sharing', -9)
-        self.assertEqual(agreement.decision, {'result': 'spoken', 'piece': 'Hello everyone,'})
+        self.assertEqual(agreement.decision, {'result': 'spoken', 'piece': 'Hello everyone,', 'dutch': 'Hallo allemaal'})
         heard = 'Hallo allemaal ik deel even mijn scherm'.split()
         agreement.offer(heard, 'I am sharing my screen', 2)
         agreement.offer(heard + ['en'], 'I am sharing my screen and', 2)

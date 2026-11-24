@@ -138,6 +138,7 @@ class Agreement:
         self.spoken = f'{self.spoken} {text}'.strip()
         self.drafts = []
         self.hold('spoken', [text])
+        self.decision['dutch'] = ' '.join(words[start:start + dutch])
         return text
 
 
