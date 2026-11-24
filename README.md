@@ -289,79 +289,22 @@ looking.
 
 ## Live translation in your own voice
 
-Double-tap the memo key, or run `talkey translate toggle`, to turn on live
-translation. talkey listens to your
-microphone, translates what you say into English, and speaks it in your own
-voice into a virtual microphone called **talkey English mic**. Choose that
-microphone in your call app (Discord, Zoom, Teams, a browser) and the other side
-hears you in English, a little under a second after each pause.
+![the HUD translating as you speak](docs/screenshots/translate-demo.gif)
 
-All of it runs on your machine:
+Double-tap the memo key, or run `talkey translate toggle`, and the people in your
+call hear you in English, in your own voice, while you talk in your own language.
+talkey listens to your microphone, translates what you say, and speaks it into a
+virtual microphone called **talkey English mic** that you pick in your call app.
+The HUD shows what it heard and what it said as you go.
 
-1. Silero finds where each phrase ends, as in auto mode.
-2. Your whisper server writes down the phrase.
-3. An Ollama model translates it. The default is `translategemma:4b`, a Gemma 3
-   model trained for translation: `ollama pull translategemma:4b`.
-4. [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) speaks it on the CPU,
-   in a voice cloned from a 25-second recording of you.
+All of it runs on your machine: your whisper server for the words, an Ollama
+model (`translategemma:4b`) for the translation, and Pocket TTS on the CPU for a
+voice cloned from 25 seconds of you. The English usually starts 2 to 3.5 seconds
+into a sentence, without ever speaking a word it had to guess.
 
-Run `talkey-setup translate` once. It shows how to install Pocket TTS in its own
-Python environment, records your voice, and makes the clone. Read the sample in
-English: the clone copies your accent and your microphone, so this is what makes
-it sound like you speaking English. The cloning weights are gated: accept the
-terms at <https://huggingface.co/kyutai/pocket-tts> and log in once with
-`hf auth login`. That download is the only network use. A running session sets
-`HF_HUB_OFFLINE=1`, so it cannot reach the network.
-
-Starting translate mode stops auto mode, and the other way round, because both
-act on everything you say. Use headphones: with `TALKEY_TRANSLATE_MONITOR=1`
-the English also plays on your own output, and a speaker would feed it back into
-your microphone. The virtual microphone stays after you stop translating, so
-your call keeps it selected. It is silent while translation is off.
-
-While you talk, the HUD shows your Dutch as whisper hears it, with the English
-under it. Every quarter second talkey transcribes the phrase so far and
-translates all of it, continuing the English already spoken. An earlier draft is
-spoken once a later one heard more Dutch after the same words and still starts
-with the same English. Until you say the verb, which Dutch and German often put
-at the end, the model guesses one; the guess changes when the verb arrives, so it
-is never spoken. Speaking English whose end later changed is what used to drop
-words. The first piece goes out as soon as two words are agreed; later ones wait
-until the voice is about to run out and end where the model put a comma or
-period, so a phrase comes out in few, large pieces. Each piece is spoken as a
-continuation of the one before it, so they sound like one sentence. The rest is
-translated when you pause. `TALKEY_TRANSLATE_STREAM=0` always waits for the
-pause. After four seconds of speech, a short pause ends a phrase.
-
-| Setting | Default | Meaning |
-|---|---|---|
-| `TALKEY_TRANSLATE_FROM` | `nl` | Language you speak; `auto` lets whisper guess per phrase |
-| `TALKEY_TRANSLATE_LLM` | `translategemma:4b` | Ollama model that translates |
-| `TALKEY_TRANSLATE_GPU_LAYERS` | unset | `99` forces the whole model onto the GPU; Ollama is cautious and may put part of it on the CPU, which is about 3x slower |
-| `TALKEY_TRANSLATE_TEMP` | Pocket's `0.3` | Voice sampling temperature. Around `0.45` can sound more like you; at `1.0` words start to slur |
-| `TALKEY_TRANSLATE_STREAM` | `1` | Speak English the drafts agree on before you pause; `0` waits for the pause |
-| `TALKEY_TRANSLATE_PREVIEW_MS` | `250` | How often the phrase so far is transcribed and translated |
-| `TALKEY_TRANSLATE_TICK` | `1` | Tick softly while a phrase waits for its next piece, so listeners know you have not stopped; `0` leaves it silent |
-| `TALKEY_TRANSLATE_RECORD` | `0` | `1` keeps, per phrase, your Dutch as it was heard and the English as the microphone carried it, pauses and ticks included |
-| `TALKEY_TRANSLATE_SILENCE_MS` | `500` | Pause that ends a phrase |
-| `TALKEY_TRANSLATE_QUICK_SILENCE_MS` | `250` | Shorter pause that ends a phrase once it is long |
-| `TALKEY_TRANSLATE_QUICK_AFTER_S` | `4` | Speech before the shorter pause applies |
-| `TALKEY_TRANSLATE_MAX_S` | `15` | Longest phrase, cut even without a pause |
-| `TALKEY_TRANSLATE_MONITOR` | `0` | `1` also plays the English on your own output |
-
-To follow along, or to check the speed:
-
-```bash
-tail -f "$XDG_RUNTIME_DIR/talkey/translate.current/lines.log"
-```
-
-Each entry shows what was heard, what was said, the pieces it was spoken in, and
-when the voice began: counted from when you began, and from your pause (negative
-means before it). On an RTX 3070 Ti with whisper large-v3-turbo and
-TranslateGemma fully on the GPU, the voice began 1.9 to 3.3 seconds into four
-real phrases of 2 to 10 seconds, up to 7.5 seconds before the pause. Most of
-that is waiting until the first words are heard the same way twice; the
-first words of a phrase are also the ones whisper most often mishears.
+**[docs/translate.md](docs/translate.md)** has the step-by-step install guide,
+how to get the voice to sound like you, how it works, settings, debugging and
+troubleshooting. [Watch the demo with sound](docs/media/translate-demo.mp4).
 
 ## Install
 

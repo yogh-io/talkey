@@ -115,7 +115,8 @@ package() {
   done
 
   install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md CHANGELOG.md
-  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname/docs" docs/architecture.md
-  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname/docs/screenshots" docs/screenshots/*.png
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname/docs" docs/architecture.md docs/translate.md
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname/docs/screenshots" docs/screenshots/*.png docs/screenshots/*.gif
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname/docs/media" docs/media/*.mp4
   install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE
 }
