@@ -10,7 +10,8 @@ HIST_N="${TALKEY_HIST_N:-70}"        # history columns (curve resolution)
 SVG_W="${TALKEY_SVG_W:-600}"; SVG_H="${TALKEY_SVG_H:-90}"   # viewBox; the widget scales it
 C_GOOD="#38d07f"; C_LOW="#e2953a"; C_LOUD="#f2573f"; C_SIL="#4b555f"
 LVL_HIST=(); LAST_SZ=0; LAST_TAKE=""; TICK=0      # persistent across ticks (feed is one long-lived loop)
-SVGDIR="$STATE_DIR/meter"; mkdir -p "$SVGDIR"; rm -f "$SVGDIR"/m-*.svg 2>/dev/null
+# Each feed draws into its own directory, so one never removes the other's frames.
+SVGDIR="${SVGDIR:-$STATE_DIR/meter}"; mkdir -p "$SVGDIR"; rm -f "$SVGDIR"/m-*.svg 2>/dev/null
 
 # build_svg PATH - write a smooth, per-column-coloured area chart of LVL_HIST.
 build_svg() {
@@ -92,39 +93,7 @@ rows() {
     }'
 }
 
-# Live translation shows while it runs, unless a dictation is newer or still going.
-translating() {
-  local run; run="$(readlink -f "$STATE_DIR/translate.current" 2>/dev/null)"
-  [[ -n "$run" ]] && process_alive "$run/worker.pid" || return 1
-  process_alive "$STATE_DIR/dictate.pid" && return 1
-  [[ ! -e "$STATE_DIR/dictate.pending" && "$SUBS" -nt "$HD" ]]
-}
-
-emit_translate() {
-  local live text headertext pkdb lvl zone stamp meterpath
-  # The worker refreshes translate.raw while a phrase shows; each refresh is one step of the trace.
-  if [[ "$LAST_TAKE" != translate ]]; then LVL_HIST=(); LAST_TAKE=translate; LAST_SZ=0; fi
-  read -r pkdb lvl zone < <(peak "$LEVEL")
-  stamp="$(stat -Lc%Y.%y "$LEVEL" 2>/dev/null)"
-  if [[ -n "$stamp" && "$stamp" != "$LAST_LEVEL" ]]; then LVL_HIST+=("$pkdb"); LAST_LEVEL="$stamp"; fi
-  (( ${#LVL_HIST[@]} > HIST_N )) && LVL_HIST=("${LVL_HIST[@]: -HIST_N}")
-  TICK=$((TICK + 1)); meterpath="$SVGDIR/m-$TICK.svg"
-  build_svg "$meterpath"
-  rm -f "$SVGDIR/m-$((TICK - 4)).svg" 2>/dev/null
-  live="$(jq -r '.lines[-1].live // false' "$SUBS" 2>/dev/null)"
-  text="$(jq -r '.lines[] | "» " + (if .dutch == "" then "…" else .dutch end),
-                           "→ " + (if .english == "" then "…" else .english end)' "$SUBS" 2>/dev/null)"
-  headertext="${TALKEY_TRANSLATE_FROM:-nl} → en"; headertext="${headertext^^}"
-  [[ "$live" != true ]] || headertext+=" · HEARING"
-  jq -cn --arg ht "$headertext" --arg t "$(rows "$text" "speak…")" --arg ft "double-tap $L_MEMO to stop" \
-     --argjson l "$lvl" --arg z "$zone" --arg mp "$meterpath" \
-     '{header:"translating", headertext:$ht, transcript:$t, timetext:"", long:false,
-       footertext:$ft, footerkind:"plain", metricstext:"", pzone:"",
-       level:$l, zone:$z, meterpath:$mp}'
-}
-
 emit() {
-  if translating; then emit_translate; return; fi
   local pkdb=-99 lvl=0 zone=silence header transcript footer secs long
   local take; take="$(readlink -f "$STATE_DIR/dictate.current" 2>/dev/null)"
   if [[ "$take" != "$LAST_TAKE" ]]; then LVL_HIST=(); LAST_SZ=0; LAST_TAKE="$take"; fi
@@ -199,4 +168,103 @@ emit() {
      '{header:$h, headertext:$ht, transcript:$t, timetext:$tt, long:($lg==1),
        footertext:$ft, footerkind:$fk, metricstext:$mt, pzone:$pz,
        level:$l, zone:$z, meterpath:$mp}'
+}
+
+# --- live translation: the session's phrases, and where the broadcast is ---------
+# The view keeps SUB_ROWS rows of SUB_COLS characters, so the window never changes
+# size. The worker gives each piece of English the Unix time it starts and stops
+# playing; where the voice is inside a piece is estimated from its characters.
+SUB_ROWS=14; SUB_COLS=84
+SUB_MONO="UbuntuMono Nerd Font Mono, Ubuntu Mono, DejaVu Sans Mono, monospace"
+# Colours from the eww.scss palette: dim Dutch, bright English, the piece on air on teal.
+# shellcheck disable=SC2016
+SUB_JQ='
+def esc: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
+def words: [splits(" +")] | map(select(length > 0));
+def look: {
+  nl: "foreground=\"#9aa3ab\"", heard: "foreground=\"#7f868c\" style=\"italic\"",
+  played: "foreground=\"#dfe3e6\"", said: "foreground=\"#ffffff\" background=\"#1e5e68\"",
+  next: "foreground=\"#9fd3da\" background=\"#1e5e68\"",
+  queued: "foreground=\"#6b737a\" style=\"italic\"", wait: "foreground=\"#6b737a\""}[.];
+def wrap: if length == 0 then [] else
+  reduce .[] as $x ([[]];
+    (.[-1] | map(.w | length + 1) | add // 0) as $used
+    | if (.[-1] | length) > 0 and $used + ($x.w | length) > $cols then . + [[$x]] else .[-1] += [$x] end)
+  end;
+def markup: reduce .[] as $x ([];
+    if length == 0 then [{s: $x.s, t: $x.w, sep: ""}]
+    elif .[-1].s == $x.s then .[-1].t += " " + $x.w
+    elif .[-1].s == "said" and $x.s == "next" then . + [{s: $x.s, t: " " + $x.w, sep: ""}]
+    else . + [{s: $x.s, t: $x.w, sep: " "}] end)
+  | map(.sep + "<span \(.s | look)>\(.t | esc)</span>") | join("");
+
+[.lines[].pieces[]? | select(.start != null and .end != null and .end > .start)] as $played
+| ([$played[].text | length] | add // 0) as $chars
+| (if $chars > 0 then ([$played[] | .end - .start] | add) / $chars else 0.065 end) as $rate
+| def on_air: .start != null and .start <= $now and (.end == null or $now < .end);
+  def piece_words: (.text | words) as $w
+  | if .start == null or $now < .start then $w | map({w: ., s: "queued"})
+    elif .end != null and $now >= .end then $w | map({w: ., s: "played"})
+    else
+      ([if .end != null then .end - .start else (.text | length) * $rate end, 0.001] | max) as $d
+      | (($now - .start) / $d * (.text | length)) as $at
+      | reduce range(0; $w | length) as $i ({out: [], c: 0};
+          .out += [{w: $w[$i], s: (if $i == 0 or .c <= $at then "said" else "next" end)}]
+          | .c += ($w[$i] | length) + 1)
+      | .out
+    end;
+  def phrase_rows: . as $l
+  | (if .dutch == "" then [{w: "…", s: "wait"}] else .dutch | words | map({w: ., s: (if $l.live then "heard" else "nl" end)}) end) as $nl
+  | ([.pieces[]? | piece_words[]] + (if .done then [] else [{w: "…", s: "wait"}] end)) as $en
+  | ($nl | wrap | to_entries | map({n: $l.n, g: (if .key == 0 then "»" else " " end), r: .value}))
+    + ($en | wrap | to_entries | map({n: $l.n, g: (if .key == 0 then "→" else " " end), r: .value}));
+[.lines[].n] as $ns
+| (if $anchor == null then ($ns | length) else [$ns[] | select(. <= $anchor)] | length end) as $bottom
+| ([0, $bottom - $rows] | max) as $first
+| [.lines[$first:$bottom][] | phrase_rows[]] as $above
+| ($first == 0 and ($above | length) <= $rows) as $top
+| (if $top then [.lines[:$rows][] | phrase_rows[]][:$rows] else $above[-$rows:] end) as $view
+| ($view[-1].n // null) as $last
+| ([$ns[] | select($last != null and . > $last)]) as $newer
+| (if $view == [] then [{g: " ", r: [{w: "speak…", s: "wait"}]}] else $view end) as $view
+| ([range(0; $rows - ($view | length)) | {g: " ", r: []}] + $view
+   | map("<span face=\"\($mono)\" foreground=\"#565c62\">\(.g) </span>"
+         + (if (.r | length) == 0 then " " else .r | markup end))
+   | join("\n")) as $text
+| (if $top or $last == null then "stay" else ([$ns[] | select(. < $last)] | last // "stay" | tostring) end) as $up
+| (if $anchor != null then {status: "↓ \($newer | length) NEWER", kind: "back", hint: "scroll down for the newest  ·  "}
+   elif any(.lines[].pieces[]?; on_air) then {status: "▶ ON AIR", kind: "onair"}
+   else {status: "", kind: "plain"} end) as $state
+| {
+    headertext: ($header + (if .lines[-1].live // false then " · HEARING" else "" end)),
+    status: $state.status, statuskind: $state.kind, rows: $text,
+    footertext: "\($state.hint // (if $up == "stay" then "" else "scroll up to look back  ·  " end))double-tap \($memo) to stop",
+    level: $level, zone: $zone, meterpath: $meter,
+    up: $up,
+    down: (if ($newer | length) <= 1 then "live" else ($newer[0] | tostring) end),
+    busy: any(.lines[].pieces[]?; .start != null and (.end == null or .end > $now))
+  }'
+
+# emit_subtitles - one frame of the translate window; BUSY=1 while English is on air or due.
+emit_subtitles() {
+  local pkdb lvl zone stamp meterpath anchor now subs frame header
+  read -r pkdb lvl zone < <(peak "$LEVEL")
+  # The worker refreshes translate.raw while a phrase shows; each refresh is one step of the trace.
+  stamp="$(stat -Lc%Y.%y "$LEVEL" 2>/dev/null)"
+  if [[ -n "$stamp" && "$stamp" != "$LAST_LEVEL" ]]; then LVL_HIST+=("$pkdb"); LAST_LEVEL="$stamp"; fi
+  (( ${#LVL_HIST[@]} > HIST_N )) && LVL_HIST=("${LVL_HIST[@]: -HIST_N}")
+  TICK=$((TICK + 1)); meterpath="$SVGDIR/m-$TICK.svg"
+  build_svg "$meterpath"
+  rm -f "$SVGDIR/m-$((TICK - 4)).svg" 2>/dev/null
+  anchor="$(cat "$SCROLL" 2>/dev/null)"; [[ "$anchor" =~ ^[0-9]+$ ]] || anchor=null
+  # EPOCHREALTIME writes the locale's decimal mark; jq wants a dot.
+  now="${EPOCHREALTIME%??????}"; now="${now%?}.${EPOCHREALTIME: -6}"
+  subs="$(cat "$SUBS" 2>/dev/null)"; [[ -n "$subs" ]] || subs='{"lines":[]}'
+  header="${TALKEY_TRANSLATE_FROM:-nl} → en"
+  frame="$(jq -c --argjson now "$now" --argjson anchor "$anchor" --argjson rows "$SUB_ROWS" \
+             --argjson cols "$SUB_COLS" --arg mono "$SUB_MONO" --arg header "${header^^}" \
+             --arg memo "$L_MEMO" --argjson level "$lvl" --arg zone "$zone" --arg meter "$meterpath" \
+             "$SUB_JQ" <<< "$subs")" || { BUSY=0; return; }
+  BUSY=0; [[ "$frame" != *'"busy":true'* ]] || BUSY=1
+  printf '%s\n' "$frame"
 }

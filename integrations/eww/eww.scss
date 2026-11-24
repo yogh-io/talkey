@@ -96,6 +96,19 @@ $sans: "Cantarell", "Noto Sans", "DejaVu Sans", sans-serif;
 .foot-cancel  { color: $loud;  }
 .foot-restart { color: $quiet; }
 
+// --- live translation -------------------------------------------------------
+// Same panel as the HUD, wider and with more rows. The row colours are Pango
+// markup from the feed (lib/hud.sh), in this palette.
+.tr-rows {
+  font-family: $sans;
+  font-size: 19px;
+  margin-bottom: 12px;
+}
+.tr-well { padding: 6px 12px; }
+.tr-status { font-family: $mono; font-size: 15px; color: $ink-dim; }
+.tr-onair  { color: $live; }
+.tr-back   { color: $work; }
+
 // --- key cheat sheet --------------------------------------------------------
 // Same panel language as the HUD, so the two read as one tool. Toggled by
 // `talkey help`; drawn here rather than in a terminal, so talkey needs no

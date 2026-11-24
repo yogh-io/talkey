@@ -62,6 +62,37 @@
   :windowtype "notification"
   (talkeyhud))
 
+;; --- live translation --------------------------------------------------------
+;; Its own window, so the dictation HUD keeps its size: eww never shrinks a window.
+;; The feed draws a fixed number of rows as Pango markup: what was heard, what was
+;; said, and the English on air highlighted. The wheel scrolls back through the
+;; session; the feed names where each step goes (up/down), so the handler is dumb.
+(deflisten tr
+  :initial '{"headertext":"","status":"","statuskind":"plain","rows":"","footertext":"","zone":"silence","meterpath":"blank.svg","up":"stay","down":"live"}'
+  "$TALKEY_EWW_DIR/eww-feed translate")
+
+(defwidget talkeytranslate []
+  (eventbox :onscroll '"$TALKEY_EWW_DIR/eww-feed" scroll {} ${tr.up} ${tr.down}'
+    (box :class "hud zone-${tr.zone}" :orientation "vertical" :space-evenly false :spacing 0 :hexpand true :halign "fill"
+      (box :class "hud-head" :orientation "horizontal" :space-evenly false :hexpand true
+        (label :class "hud-state state-translating" :text "● ${tr.headertext}")
+        (box :hexpand true)
+        (label :class "tr-status tr-${tr.statuskind}" :text {tr.status}))
+      (label :class "tr-rows" :halign "fill" :hexpand true :xalign 0 :yalign 0 :truncate true :unindent false
+             :markup {tr.rows})
+      (box :class "hud-well tr-well" :hexpand true :halign "fill"
+        (image :class "hud-graph" :path {tr.meterpath} :image-width 796 :image-height 34))
+      (label :class "hud-footer" :halign "start" :text {tr.footertext}))))
+
+;; wm-ignore: the window manager never manages it, so it can never take focus,
+;; not even when you scroll it, and it needs no window manager rule.
+(defwindow talkeytranslate
+  :geometry (geometry :x "0px" :y "300px" :anchor "top center" :width "860px")
+  :stacking "fg"
+  :focusable false
+  :wm-ignore true
+  (talkeytranslate))
+
 ;; --- key cheat sheet -------------------------------------------------------
 ;; Toggled by `talkey help`, which only flips a state file; talkey-hud fills in
 ;; the labels below and opens this window. The labels are yours to set (they name

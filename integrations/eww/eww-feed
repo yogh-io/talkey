@@ -3,6 +3,10 @@
 # experimental eww HUD. Pure parallel renderer: reads the SAME files bin/talkey writes
 # ($STATE_DIR/dictate.{header,transcript,footer,metrics,raw}); changes nothing.
 #
+#   eww-feed                          the dictation HUD
+#   eww-feed translate                the translate window, from translate.subtitles
+#   eww-feed scroll DIR UP DOWN       the mouse wheel over the translate window
+#
 # It computes the display strings here (footer hint, metrics line, elapsed time)
 # so the widget stays a dumb renderer. Fields:
 #   header       state token (listening/transcribing/done/cancelled/nospeech)
@@ -26,6 +30,19 @@ command -v jq >/dev/null 2>&1 || { echo "eww-feed: jq is required for the HUD" >
 RAW="$STATE_DIR/dictate.raw"; TR="$STATE_DIR/dictate.transcript"
 HD="$STATE_DIR/dictate.header"; FT="$STATE_DIR/dictate.footer"; MET="$STATE_DIR/dictate.metrics"
 SUBS="$STATE_DIR/translate.subtitles"; LEVEL="$STATE_DIR/translate.raw"; LAST_LEVEL=""
+SCROLL="$STATE_DIR/translate.scroll"
+
+# The translate window shows the phrase in SCROLL at its bottom, or the newest when
+# there is no SCROLL. Each frame names the phrase a wheel step up or down goes to.
+if [[ "${1:-}" == scroll ]]; then
+  if [[ "${2:-}" == up ]]; then target="${3:-stay}"; else target="${4:-stay}"; fi
+  case "$target" in
+    live) rm -f "$SCROLL" ;;
+    ''|*[!0-9]*) ;;
+    *) printf '%s\n' "$target" > "$SCROLL.tmp" && mv -f "$SCROLL.tmp" "$SCROLL" ;;
+  esac
+  exit 0
+fi
 
 # The hints name keys, so they follow the same labels as the cheat sheet - a
 # hardcoded "Square" tells most people to press a key they do not have.
@@ -35,8 +52,22 @@ L_MEMO="${TALKEY_LABEL_MEMO:-memo}"
 LOUD="${TALKEY_PEAK_LOUD_DB:--10}"; LOW="${TALKEY_PEAK_LOW_DB:--20}"
 FLOOR="${TALKEY_LVL_FLOOR_DB:--45}"; WARN_S="${TALKEY_WARN_S:-25}"
 
+[[ "${1:-}" != translate ]] || SVGDIR="$STATE_DIR/meter-translate"
 . "$DATA_DIR/lib/session.sh"
 . "$DATA_DIR/lib/hud.sh"
+
+# Redraw ten times a second while English is on air, so the highlight follows it.
+if [[ "${1:-}" == translate ]]; then
+  SVG_W=796; SVG_H=34
+  while :; do
+    emit_subtitles
+    if (( BUSY )); then
+      sleep 0.1
+    else
+      inotifywait -qq -t 30 -e create -e modify -e delete -e moved_to "$STATE_DIR" 2>/dev/null || true
+    fi
+  done
+fi
 
 # Sample while a recorder is alive; otherwise wait for controller state events.
 while :; do

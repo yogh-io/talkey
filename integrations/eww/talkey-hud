@@ -41,8 +41,10 @@ HUD_ANCHOR="${TALKEY_HUD_ANCHOR:-}"      # e.g. "top center"
 open_args=()
 [[ -n "$HUD_MONITOR" ]] && open_args+=(--screen "$HUD_MONITOR")
 [[ -n "$HUD_POS" ]]     && open_args+=(--pos "$HUD_POS")
-[[ -n "$HUD_SIZE" ]]    && open_args+=(--size "$HUD_SIZE")
 [[ -n "$HUD_ANCHOR" ]]  && open_args+=(--anchor "$HUD_ANCHOR")
+# The translate window goes in the same place, at its own size.
+place_args=(${open_args[@]+"${open_args[@]}"})
+[[ -n "$HUD_SIZE" ]]    && open_args+=(--size "$HUD_SIZE")
 
 # eww runs the deflisten command through a shell but doesn't hand it the config
 # dir, so export it here - the daemon (and thus eww-feed) inherit it. Portable:
@@ -83,8 +85,14 @@ ew_optional() { "$EWW" -c "$CFG" "$@" >/dev/null 2>&1 9>&- || true; }
 # `eww open` on a window that is already open closes and reopens it, and every
 # state change of a take lands here - so open only when it is not up yet, or the
 # HUD flickers at the start and end of each dictation.
-hud_is_open() { "$EWW" -c "$CFG" active-windows 2>/dev/null 9>&- | grep -q '^talkeyhud:'; }
-open_hud()  { hud_is_open || ew open talkeyhud ${open_args[@]+"${open_args[@]}"}; }
+is_open() { "$EWW" -c "$CFG" active-windows 2>/dev/null 9>&- | grep -q "^$1:"; }
+open_hud()  { is_open talkeyhud || ew open talkeyhud ${open_args[@]+"${open_args[@]}"}; }
+# A new translate window starts at the newest phrase, not where the last one was scrolled to.
+open_translate() {
+  is_open talkeytranslate && return
+  rm -f "$STATE_DIR/translate.scroll"
+  ew open talkeytranslate ${place_args[@]+"${place_args[@]}"}
+}
 # Closing a window that is already closed is a NORMAL outcome here, not a fault:
 # the recorder pidfile and the pending marker each schedule a close when they go
 # away, and the alert path runs a third on its own timer, so on a plain dictation
@@ -94,16 +102,26 @@ open_hud()  { hud_is_open || ew open talkeyhud ${open_args[@]+"${open_args[@]}"}
 # logged problems" in talkey doctor. Nothing is hidden by staying quiet: a close
 # that really fails leaves an always-on-top window sitting on your screen.
 close_hud() { ew_optional close talkeyhud; }
+close_translate() { ew_optional close talkeytranslate; }
 
 # Recording stopping is NOT the dictation ending. The final text, the done state
 # and the confidence/silence/peak reading are all written after the recorder is
 # gone - on a CPU-only machine that transcription takes tens of seconds, far
 # longer than LINGER. So the HUD closes on talkey's pending marker, not on the
 # recorder pidfile: whichever of the two goes away last starts the linger.
-# A dictation, or live translation hearing, translating or speaking a phrase.
-showing() { [[ -f "$PIDFILE" || -f "$PENDING" || -f "$STATE_DIR/translate.showing" ]]; }
-schedule_close() {
-  ( sleep "$LINGER"; showing || close_hud ) &
+# A dictation or an alert shows in the HUD. Live translation hearing, translating
+# or speaking a phrase shows in its own window in the same place; while the HUD
+# is needed, the HUD replaces it.
+want_hud() { [[ -f "$PIDFILE" || -f "$PENDING" || -f "$ALERT" ]]; }
+want_translate() { [[ -f "$STATE_DIR/translate.showing" ]] && ! want_hud; }
+refresh() {
+  if want_hud; then
+    close_translate; open_hud
+  elif want_translate; then
+    close_hud; open_translate
+  else
+    ( sleep "$LINGER"; want_hud || close_hud; want_translate || close_translate ) &
+  fi
 }
 
 # The cheat sheet. The labels name the keys printed on YOUR keyboard - talkey
@@ -134,7 +152,7 @@ help_json() {
 open_help()  { ew update "help=$(help_json)"; ew open talkeyhelp ${open_args[@]+"${open_args[@]}"}; }
 close_help() { ew close talkeyhelp; }
 
-if [[ "${1:-}" == stop ]]; then close_hud; ew_optional close talkeyhelp; ew_optional kill; exit 0; fi
+if [[ "${1:-}" == stop ]]; then close_hud; close_translate; ew_optional close talkeyhelp; ew_optional kill; exit 0; fi
 
 command -v inotifywait >/dev/null 2>&1 || { echo "need inotify-tools"; exit 1; }
 mkdir -p "$STATE_DIR"
@@ -151,7 +169,7 @@ fi
 # it can't resolve eww-feed). Kill is a no-op if none is running.
 ew_optional kill; sleep 0.3; ew daemon || echo "talkey-hud: eww daemon failed to start - see $HUD_LOG" >&2
 sleep 0.4
-showing && open_hud
+if want_hud || want_translate; then refresh; fi
 [[ -f "$HELP_ON" ]] && open_help
 
 # Monitor the state dir. The recorder pidfile appearing -> show now. The pidfile
@@ -170,23 +188,23 @@ trap 'exit 143' TERM
 
 while read -r _ev fname <&8; do
   case "$fname" in
-    session.changed|dictate.pid)
-      if showing; then open_hud; else schedule_close; fi ;;
-    translate.showing)
-      if showing; then open_hud; else schedule_close; fi ;;
+    session.changed|dictate.pid|translate.showing)
+      refresh ;;
     dictate.pending)
       # Only the marker going away matters here - it appears while the recorder
       # pidfile is still there, and that is what opened the HUD.
-      [[ -f "$PENDING" ]] || schedule_close ;;
+      [[ -f "$PENDING" ]] || refresh ;;
     dictate.alert)
       # talkey refused before recording - there is no pidfile to open the window,
       # and a message nobody can see is the same as no message. Held longer than
       # a normal dictation: this one names a command to go and run, and two lines
       # cannot be read in the time a finished dictation lingers.
       if [[ -f "$ALERT" ]]; then
-        open_hud
+        refresh
         ( sleep "$ERR_LINGER"; rm -f "$ALERT"
-          showing || close_hud ) &
+          want_hud || close_hud ) &
+      else
+        refresh
       fi ;;
     help.on)
       if [[ -f "$HELP_ON" ]]; then open_help; else close_help; fi ;;
