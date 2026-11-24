@@ -281,6 +281,8 @@ class Phrase:
         self.lock = threading.Lock()
         self.closed = False
         self.agreement = None
+        # The conversation context while this phrase is heard, so its prompt stays the same.
+        self.context = ''
         # The bare words of the latest previews, and the latest draft with what it was made from.
         self.heard = deque(maxlen=2)
         self.drafted = None
@@ -295,7 +297,8 @@ class Phrase:
 
 
 class Translator:
-    """Ollama chat in TranslateGemma's own prompt format; recent phrases are context."""
+    """Ollama chat in TranslateGemma's own prompt format; recent phrases and the conversation context
+    the user or another program wrote are context."""
     def __init__(self):
         self.url = os.environ.get('TALKEY_TRANSLATE_URL', 'http://127.0.0.1:11434/api/chat')
         self.generate_url = urllib.parse.urljoin(self.url, '/api/generate')
@@ -313,8 +316,27 @@ class Translator:
                        'translation, without any additional explanations or commentary. Please translate the '
                        f'following {name} text into English:\n\n\n')
         self.history = deque(maxlen=3)
+        config = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
+        self.files = [Path(os.environ.get('TALKEY_TRANSLATE_NOTES', config / 'talkey/translate-notes.txt'))]
+        if os.environ.get('TALKEY_STATE_DIR'):
+            self.files.append(Path(os.environ['TALKEY_STATE_DIR']) / 'translate.context')
+        self.read = {}
 
-    def __call__(self, text, spoken=''):
+    def context(self):
+        """The notes the user wrote and the live context any program may write, read again only when
+        changed. The newest part is kept, up to about a quarter of the model's context."""
+        parts = []
+        for path in self.files:
+            try:
+                stamp = path.stat().st_mtime_ns
+            except OSError:
+                continue
+            if self.read.get(path, (None,))[0] != stamp:
+                self.read[path] = (stamp, path.read_text(errors='replace').strip())
+            parts.append(self.read[path][1])
+        return '\n'.join(part for part in parts if part)[-self.options['num_ctx']:]
+
+    def __call__(self, text, spoken='', context=''):
         """English for text; with spoken, only what follows the English already spoken.
 
         Also says whether that carries on inside the last spoken word, as "'ll" after "I".
@@ -322,7 +344,11 @@ class Translator:
         messages = []
         for source, english in self.history:
             messages += [{'role': 'user', 'content': self.prompt + source}, {'role': 'assistant', 'content': english}]
-        messages.append({'role': 'user', 'content': self.prompt + text})
+        prompt = self.prompt
+        if context:
+            prompt = prompt.replace('Please translate', 'Context of the conversation, for reference only, do not '
+                                    f'translate it:\n{context}\n\nPlease translate')
+        messages.append({'role': 'user', 'content': prompt + text})
         spoken = unfinished(spoken)
         if spoken:
             messages.append({'role': 'assistant', 'content': spoken})
@@ -560,6 +586,10 @@ class Interpreter:
             piece.update({key: round(value + offset, 3) for key, value in times.items()})
             self.show()
 
+    def prompt(self, phrase):
+        """Whisper's prompt: the conversation context, then the last sentences, which whisper keeps if it must cut."""
+        return ' '.join(filter(None, [phrase.context.replace('\n', ' '), *self.recent])) or None
+
     def preview_phrase(self, phrase, pcm, prompt):
         try:
             with phrase.lock:
@@ -597,7 +627,7 @@ class Interpreter:
             draft, joined, ends = phrase.drafted[1]
         else:
             sent = time.monotonic()
-            draft, joined = self.translate(text, spoken)
+            draft, joined = self.translate(text, spoken, phrase.context)
             ends = self.translate.ends(text)
             phrase.drafted = ((text, spoken), (draft, joined, ends))
             self.trace(phrase, 'draft', source=text, spoken=spoken, english=draft, ends=round(ends, 3),
@@ -657,7 +687,7 @@ class Interpreter:
             pcm, phrase = self.phrases.get()
             sent = time.monotonic()
             # The last sentences steer whisper toward words that fit what was being said.
-            text, _, no_speech = transcribe_words(pcm, self.url, self.language, ' '.join(self.recent) or None, 16000, 1)
+            text, _, no_speech = transcribe_words(pcm, self.url, self.language, self.prompt(phrase), 16000, 1)
             self.trace(phrase, 'final_asr', audio_s=round(len(pcm) / 32000, 3), text=text,
                        latency=round(time.monotonic() - sent, 3), no_speech=round(no_speech, 4))
             with phrase.lock:
@@ -678,7 +708,7 @@ class Interpreter:
                 words, agreement = text.split(), phrase.agreement or Agreement(self.end_p)
                 if re.search(r'\w', ' '.join(words[resume(agreement.said, words):])):
                     sent = time.monotonic()
-                    english, joined = self.translate(text, agreement.spoken)
+                    english, joined = self.translate(text, agreement.spoken, phrase.context)
                     self.trace(phrase, 'final_draft', source=text, spoken=agreement.spoken, english=english,
                                latency=round(time.monotonic() - sent, 3))
                     if english:
@@ -868,6 +898,7 @@ class Interpreter:
                 self.preroll.clear()
                 self.count += 1
                 phrase, previewed = Phrase(time.monotonic(), self.count), len(audio)
+                phrase.context = self.translate.context()
                 if self.trace.file:
                     frames = self.trace.frames
                     phrase.onset = self.trace.clock(frames - self.endpoint.start_frames)
@@ -892,7 +923,7 @@ class Interpreter:
                     and (self.previewing is None or self.previewing.done())):
                 previewed = len(audio)
                 self.previewing = self.previews.submit(self.preview_phrase, phrase, b''.join(audio),
-                                                       ' '.join(self.recent) or None)
+                                                       self.prompt(phrase))
 
     def close(self):
         self.stopping.set()

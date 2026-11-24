@@ -278,7 +278,7 @@ class TimingTests(unittest.TestCase):
             drafts = {'Hallo allemaal': 'Hello everyone, welcome to the meeting',
                       'Hallo allemaal ik deel': 'Hello everyone, welcome to the meeting, I am sharing'}
 
-            def __call__(self, text, spoken=''):
+            def __call__(self, text, spoken='', context=''):
                 return self.drafts[text], False
 
             def ends(self, text):
@@ -415,6 +415,28 @@ class TranslatorTests(unittest.TestCase):
         self.reply = '. Then it.'
         self.assertEqual(translate('Ik zal het laten zien.', spoken='I will.'), ('Then it.', False))
 
+    def test_notes_and_live_context_go_before_the_text_and_are_read_when_changed(self):
+        with tempfile.TemporaryDirectory(prefix='talkey-context-') as tmp:
+            notes, state = Path(tmp)/'notes.txt', Path(tmp)/'state'
+            state.mkdir()
+            env = {'TALKEY_TRANSLATE_NOTES': str(notes), 'TALKEY_STATE_DIR': str(state)}
+            os.environ.update(env)
+            self.addCleanup(lambda: [os.environ.pop(name) for name in env])
+            translate = worker.Translator()
+            self.assertEqual(translate.context(), '')
+            notes.write_text('Weekly planning with the design team.\n')
+            (state/'translate.context').write_text('They asked about the release date.\n')
+            context = translate.context()
+            self.assertEqual(context, 'Weekly planning with the design team.\nThey asked about the release date.')
+            translate('Dan schuift hij een week op.', context=context)
+            prompt = self.requests[-1]['messages'][-1]['content']
+            self.assertIn('Context of the conversation, for reference only, do not translate it:\n' + context
+                          + '\n\nPlease translate the following Dutch text into English:', prompt)
+            self.assertTrue(prompt.endswith('Dan schuift hij een week op.'))
+            os.utime(notes, ns=(1, 1))
+            notes.write_text('Another meeting.')
+            self.assertTrue(translate.context().startswith('Another meeting.'))
+
     def test_spoken_english_is_continued_without_its_sentence_end(self):
         translate = worker.Translator()
         self.assertEqual(translate('heel de zin', spoken="Okay, I'm getting."), ('EN 1', False))
@@ -457,7 +479,12 @@ class TranslateRuntimeTests(unittest.TestCase):
         def seconds(self, text): return len(text) * .1
         def end(self): pass
     class FakeTranslator:
-        def __call__(self, text, spoken=''):
+        def context(self):
+            notes = root/'notes'
+            return notes.read_text().strip() if notes.exists() else ''
+        def __call__(self, text, spoken='', context=''):
+            if context:
+                with (root/'contexts').open('a') as f: f.write(json.dumps(context)+'\\n')
             if (root/'fail-translator').exists(): raise RuntimeError('test translator down')
             english = 'EN:' + text
             return (english[len(spoken):].strip() if spoken and english.startswith(spoken) else english), False
@@ -726,6 +753,16 @@ class TranslateRuntimeTests(unittest.TestCase):
         self.wait_for(lambda: self.spoken().endswith(b'EN:Vier.'))
         prompts = [json.loads(line) for line in (self.root/'prompts').read_text().splitlines()]
         self.assertEqual(prompts, [None, 'Een.', 'Een. Twee.', 'Een. Twee.', 'Twee. Drie.'])
+
+    def test_conversation_context_reaches_the_translator_and_whisper_per_phrase(self):
+        self.listen()
+        (self.root/'notes').write_text('Planning van het team.')
+        self.say('Een.', 'Twee.')
+        self.wait_for(lambda: self.spoken().endswith(b'EN:Twee.'))
+        prompts = [json.loads(line) for line in (self.root/'prompts').read_text().splitlines()]
+        self.assertEqual(prompts, ['Planning van het team.', 'Planning van het team. Een.'])
+        contexts = {json.loads(line) for line in (self.root/'contexts').read_text().splitlines()}
+        self.assertEqual(contexts, {'Planning van het team.'})
 
     def test_empty_and_caption_hallucinations_are_not_spoken(self):
         self.listen()

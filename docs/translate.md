@@ -20,6 +20,7 @@ model, described below.
 - [Install](#install)
 - [Getting your voice right](#getting-your-voice-right)
 - [Use it in a call](#use-it-in-a-call)
+- [Give it context](#give-it-context)
 - [What to expect](#what-to-expect)
 - [Settings](#settings)
 - [Listening back and debugging](#listening-back-and-debugging)
@@ -324,6 +325,25 @@ Most call apps mirror your own preview, so the subtitles look backwards to you
 but read normally for everyone else. Most apps can switch the mirroring off in
 their video settings.
 
+## Give it context
+
+A 4B translation model only sees a few sentences. It does not know what you
+are talking about, so a Dutch "hij" about a program becomes "he", and names
+come out wrong. Tell it, before or during a call:
+
+- **Notes** in `~/.config/talkey/translate-notes.txt`: the topic, the names of
+  people and products, terms that must stay as they are. Any language works.
+  For example: `Weekly planning with the design team. Names: Anna, Bram. Keep "sprint" in English.`
+- **Live context** in `$XDG_RUNTIME_DIR/talkey/translate.context`: any program
+  may write or append to this file while translation runs, for example the
+  agenda item or what was asked. Its newest part is used. It is removed when
+  translation starts.
+
+Both are read again when you start a new phrase, so a change applies from your
+next sentence. The translator sees them as context and does not translate them;
+whisper gets them too, which helps it spell names. Keep them short: the context
+takes room in the model's prompt and costs a little time per translation.
+
 ## What to expect
 
 - **Delay.** The English usually starts 2 to 3.5 seconds after you start a
@@ -352,6 +372,7 @@ after changing them.
 | `TALKEY_TRANSLATE_PYTHON` | `python3` | The Python with Pocket TTS installed |
 | `TALKEY_TRANSLATE_VOICE` | `~/.local/share/talkey/translate/voice.safetensors` | Your cloned voice |
 | `TALKEY_TRANSLATE_FROM` | `nl` | The language you speak, as a whisper code; `auto` lets whisper guess per phrase |
+| `TALKEY_TRANSLATE_NOTES` | `~/.config/talkey/translate-notes.txt` | Your notes on the conversation, see [Give it context](#give-it-context) |
 | `TALKEY_TRANSLATE_LLM` | `translategemma:4b` | The Ollama model that translates |
 | `TALKEY_TRANSLATE_GPU_LAYERS` | unset | `99` forces the whole translation model onto the GPU |
 | `TALKEY_TRANSLATE_URL` | `http://127.0.0.1:11434/api/chat` | Ollama's chat endpoint |
@@ -430,6 +451,8 @@ parecord --device=talkey_translate_mic check.wav
 - Your recording and your cloned voice live in `~/.local/share/talkey/translate`,
   readable only by you. They are never part of talkey's repository or package.
 - Recordings of your calls are off by default (`TALKEY_TRANSLATE_RECORD`).
+- Your notes and the live context only go to the local translator and whisper.
+  They are not written to `lines.log` or the trace.
 - `lines.log` with the text of each phrase lives in `$XDG_RUNTIME_DIR/talkey`,
   which is normally cleared when you log out.
 - The talkey camera never stores a frame. Your webcam's picture goes straight to

@@ -40,7 +40,7 @@ translate_start() {
   translate_devices || { notify 'translate: could not create the talkey English mic' 5000; return 1; }
   if auto_active; then auto_stop; fi
   rm -f "$STATE_DIR/translate.showing" "$STATE_DIR/translate.subtitles" "$STATE_DIR/translate.raw" \
-    "$STATE_DIR/translate.scroll"
+    "$STATE_DIR/translate.scroll" "$STATE_DIR/translate.context"
   TRANSLATE_DIR="$(mktemp -d "$STATE_DIR/translate.XXXXXXXX")"
   local link="$STATE_DIR/translate.current.new-$$"
   ln -s "$TRANSLATE_DIR" "$link"; mv -Tf "$link" "$STATE_DIR/translate.current"

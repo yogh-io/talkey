@@ -199,6 +199,15 @@ generated with the previous piece's text and frames forced in front, and a
 piece that is not the last loses its end-of-speech tail, so a phrase stays one
 utterance. Any stage error stops the worker and reports `error`.
 
+The translator also gets the conversation context: the notes file
+(`TALKEY_TRANSLATE_NOTES`) and `$STATE_DIR/translate.context`, which any
+program may write and which `translate start` removes. Both are re-read, when
+their modification time changed, as a phrase starts, and stay fixed for that
+phrase, so its prompts stay the same. Their newest `num_ctx` characters go into
+the instruction as "Context of the conversation, for reference only", and
+before the recent sentences in whisper's prompt. They are never traced or
+logged.
+
 With `TALKEY_TRANSLATE_TRACE=1` the worker appends every step of each phrase to
 `trace.jsonl` in the run directory: speech start and end, each preview and
 draft with its latency, each `Agreement` decision and its reason, pieces queued,
