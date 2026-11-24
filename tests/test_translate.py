@@ -3,6 +3,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import importlib.machinery
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -10,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 import wave
 
 import test_auto
@@ -67,65 +69,114 @@ class PhrasesTests(unittest.TestCase):
 
 class AgreementTests(unittest.TestCase):
     def test_a_guessed_verb_is_never_spoken(self):
-        agreement = worker.Agreement(.25)
+        agreement = worker.Agreement()
         self.assertIsNone(agreement.offer('We moeten volgende week de release'.split(),
-                                          'We need to release it next week', -9))
-        # "uitstellen" (postpone) changed the earlier draft, so it was a guess.
-        self.assertIsNone(agreement.offer('We moeten volgende week de release nog even uitstellen'.split(),
-                                          'We need to postpone the release for another week', -9))
-        self.assertEqual(agreement.spoken, '')
-        self.assertEqual(agreement.decision['result'], 'english-changed')
-        self.assertIsNone(agreement.offer('Wij moeten volgende week de release nog even uitstellen ja'.split(),
-                                          'We need to postpone the release for another week, yes', -9))
-        self.assertEqual(agreement.decision['result'], 'dutch-changed')
-        # Against the latest draft, which only lacks new Dutch, not the older one whose English changed.
-        self.assertIsNone(agreement.offer('Wij moeten volgende week de release nog even uitstellen ja'.split(),
-                                          'We need to postpone the release for another week, yes', -9))
-        self.assertEqual(agreement.decision['result'], 'no-new-dutch')
+                                          'We need to release it next week'))
+        self.assertEqual(agreement.decision['result'], 'first-draft')
+        # "uitstellen" (postpone) changed the earlier draft after "We need to", so "release" was a guess.
+        self.assertEqual(agreement.offer('We moeten volgende week de release nog even uitstellen'.split(),
+                                         'We need to postpone the release for another week'), 'We need to')
+        self.assertEqual(agreement.commit(), ('We need to', False, False))
+        self.assertEqual(agreement.spoken, 'We need to')
 
-    def test_a_draft_a_later_one_keeps_is_spoken_as_the_later_one_writes_it(self):
-        agreement = worker.Agreement(.25)
-        self.assertIsNone(agreement.offer(['Hallo', 'allemaal'], 'Hello everyone', -9))
-        self.assertEqual(agreement.offer('Hallo allemaal ik deel'.split(), 'Hello everyone, I am sharing', -9),
+    def test_a_stable_head_is_settled_although_the_tail_changed(self):
+        agreement = worker.Agreement()
+        agreement.offer('Morgen ga ik'.split(), 'Tomorrow I will')
+        self.assertEqual(agreement.offer('Morgen ga ik even'.split(), "Tomorrow I'll just"), 'Tomorrow')
+        self.assertEqual(agreement.decision, {'result': 'settled', 'piece': 'Tomorrow'})
+
+    def test_settled_english_is_spoken_as_the_later_draft_writes_it(self):
+        agreement = worker.Agreement()
+        self.assertIsNone(agreement.offer(['Hallo', 'allemaal'], 'Hello everyone'))
+        self.assertEqual(agreement.offer('Hallo allemaal ik deel'.split(), 'Hello everyone, I am sharing'),
                          'Hello everyone,')
+        agreement.commit()
         self.assertEqual(agreement.said, ['Hallo', 'allemaal'])
+        self.assertEqual(agreement.decision,
+                         {'result': 'spoken', 'piece': 'Hello everyone,', 'dutch': 'Hallo allemaal', 'via': 'agreed'})
 
-    def test_later_pieces_end_at_a_clause_once_the_voice_needs_more(self):
-        agreement = worker.Agreement(.25)
-        agreement.offer(['Hallo', 'allemaal'], 'Hello everyone', -9)
-        agreement.offer('Hallo allemaal ik deel'.split(), 'Hello everyone, I am sharing', -9)
+    def test_nothing_is_settled_when_more_dutch_changes_the_first_word(self):
+        agreement = worker.Agreement()
+        agreement.offer(['Hallo', 'allemaal'], 'Hello everyone')
+        self.assertIsNone(agreement.offer('Hallo allemaal ik deel'.split(), 'Hi all, I am sharing'))
+        self.assertEqual(agreement.decision['result'], 'no-agreement')
+        self.assertIsNone(agreement.offer('Dag allemaal ik deel'.split(), 'Bye all, I am sharing'))
+        self.assertEqual(agreement.decision['result'], 'dutch-changed')
+
+    def test_a_later_piece_continues_the_spoken_english(self):
+        agreement = worker.Agreement()
+        agreement.offer(['Hallo', 'allemaal'], 'Hello everyone')
+        agreement.offer('Hallo allemaal ik deel'.split(), 'Hello everyone, I am sharing')
+        agreement.commit()
         heard = 'Hallo allemaal ik deel even mijn scherm'.split()
-        self.assertIsNone(agreement.offer(heard, 'I am sharing my screen', 2))
-        # Agreed and at a comma, but two seconds of English are still playing.
-        self.assertIsNone(agreement.offer(heard + ['en', 'dan'], 'I am sharing my screen, and then', 2))
-        # "and then" has no clause end; the voice is about to run out, so the clause goes.
-        self.assertEqual(agreement.offer(heard + ['en', 'dan', 'kijken'], 'I am sharing my screen, and then look', .5),
+        self.assertIsNone(agreement.offer(heard, 'I am sharing my screen'))
+        self.assertEqual(agreement.offer(heard + ['en', 'dan'], 'I am sharing my screen, and then'),
                          'I am sharing my screen,')
 
-    def test_after_a_long_silence_a_piece_need_not_end_at_a_clause(self):
-        agreement = worker.Agreement(.25)
-        agreement.offer(['Hallo', 'allemaal'], 'Hello everyone', -9)
-        agreement.offer('Hallo allemaal ik deel'.split(), 'Hello everyone, I am sharing', -9)
-        heard = 'Hallo allemaal ik deel even mijn scherm'.split()
-        agreement.offer(heard, 'I am sharing my screen and', -9)
-        self.assertEqual(agreement.offer(heard + ['en'], 'I am sharing my screen and then', -1.5),
-                         'I am sharing my screen and')
+    def test_a_draft_that_carries_on_inside_the_last_word_joins_it(self):
+        agreement = worker.Agreement()
+        agreement.offer('Morgen ga ik'.split(), 'Tomorrow I')
+        agreement.offer('Morgen ga ik even'.split(), 'Tomorrow I will')
+        agreement.commit()
+        self.assertEqual(agreement.spoken, 'Tomorrow I')
+        agreement.offer('Morgen ga ik even bellen'.split(), "'ll just", joined=True)
+        self.assertEqual(agreement.offer('Morgen ga ik even bellen met'.split(), "'ll just call", joined=True), "'ll just")
+        self.assertEqual(agreement.commit(), ("'ll just", True, False))
+        self.assertEqual(agreement.spoken, "Tomorrow I'll just")
+
+    def test_a_sentence_the_model_says_may_end_is_spoken_without_more_dutch(self):
+        agreement = worker.Agreement(.2)
+        self.assertEqual(agreement.offer('Ik deel even mijn scherm.'.split(), 'I am sharing my screen.', .6),
+                         'I am sharing my screen.')
+        agreement.commit()
+        self.assertEqual(agreement.decision['via'], 'end')
+        self.assertEqual(agreement.said, 'Ik deel even mijn scherm.'.split())
+
+    def test_an_open_clause_waits_for_more_dutch(self):
+        agreement = worker.Agreement(.2)
+        self.assertIsNone(agreement.offer('Ik heb gisteren met de klant'.split(), 'Yesterday I spoke with the client', .01))
+        self.assertEqual(agreement.decision['result'], 'first-draft')
+
+    def test_a_whole_sentence_stays_settled_while_its_dutch_stays(self):
+        agreement = worker.Agreement(.2)
+        heard = 'Ik deel even mijn scherm.'.split()
+        self.assertEqual(agreement.offer(heard, 'I am sharing my screen.', .6), 'I am sharing my screen.')
+        # The next sentence makes the model reword the first one; the whole draft still stands.
+        self.assertEqual(agreement.offer(heard + ['Dan', 'zie'], 'I am showing my screen. Then', .01),
+                         'I am sharing my screen.')
+        self.assertEqual(agreement.settled[-1], 'end')
+
+    def test_a_whole_sentence_is_dropped_when_its_dutch_changes(self):
+        agreement = worker.Agreement(.2)
+        agreement.offer('Ik deel even mijn scherm.'.split(), 'I am sharing my screen.', .6)
+        self.assertIsNone(agreement.offer('Ik deel even mijn schermen'.split(), 'I am sharing my screens', .01))
+        self.assertIsNone(agreement.whole)
 
 
-    def test_each_offer_says_why_it_spoke_or_held(self):
-        agreement = worker.Agreement(.25)
-        agreement.offer(['Hallo', 'allemaal'], 'Hello everyone', -9)
-        self.assertEqual(agreement.decision, {'result': 'first-draft', 'piece': None})
-        agreement.offer(['Hallo', 'allemaal'], 'Hello all', -9)
-        self.assertEqual(agreement.decision['result'], 'no-new-dutch')
-        agreement.offer('Hallo allemaal ik deel'.split(), 'Hello everyone, I am sharing', -9)
-        self.assertEqual(agreement.decision, {'result': 'spoken', 'piece': 'Hello everyone,', 'dutch': 'Hallo allemaal'})
-        heard = 'Hallo allemaal ik deel even mijn scherm'.split()
-        agreement.offer(heard, 'I am sharing my screen', 2)
-        agreement.offer(heard + ['en'], 'I am sharing my screen and', 2)
-        self.assertEqual(agreement.decision, {'result': 'no-clause-end', 'piece': 'I am sharing my screen'})
-        agreement.offer(heard + ['en', 'dan'], 'I am sharing my screen, and then', 2)
-        self.assertEqual(agreement.decision, {'result': 'voice-busy', 'piece': 'I am sharing my screen,'})
+class SettledTests(unittest.TestCase):
+    def test_words_two_transcripts_agree_on_are_trusted_up_to_a_change(self):
+        words = [('Nee,', .9), ('dan', .9), ('bel', .9), ('je', .9), ('morgen', .9)]
+        self.assertEqual(worker.settled(words, [['nee', 'dan', 'bel', 'ik']], .5), words[:3])
+        self.assertEqual(worker.settled(words, [], .5), [])
+
+    def test_a_word_whisper_is_unsure_of_needs_a_third_transcript(self):
+        words = [('Nee,', .9), ('dan', .3), ('bel', .9), ('ik', .9)]
+        self.assertEqual(worker.settled(words, [['nee', 'dan', 'bel', 'ik']], .5), words[:1])
+        self.assertEqual(worker.settled(words, [['nee', 'dan', 'bel'], ['nee', 'dan', 'bel', 'ik']], .5), words)
+        # Three transcripts must agree on everything up to that word.
+        self.assertEqual(worker.settled(words, [['nee', 'of'], ['nee', 'dan', 'bel', 'ik']], .5), words[:1])
+
+
+class WordsTests(unittest.TestCase):
+    def test_tokens_join_into_words_with_their_least_sure_probability(self):
+        import speech
+        reply = {'text': ' Nee, dan morgenochtend [BLANK_AUDIO]', 'segments': [{'no_speech_prob': .01, 'words': [
+            {'word': ' Nee', 'probability': .9}, {'word': ',', 'probability': .6}, {'word': ' dan', 'probability': .8},
+            {'word': ' morgen', 'probability': .95}, {'word': 'ochtend', 'probability': .7},
+            {'word': ' [BLANK_AUDIO]', 'probability': .5}]}]}
+        with patch.object(speech, 'inference', return_value=json.dumps(reply)):
+            self.assertEqual(speech.transcribe_words(b'', 'url', 'nl', None, 16000, 1),
+                             ('Nee, dan morgenochtend', [('Nee,', .6), ('dan', .8), ('morgenochtend', .7)], .01))
 
 
 class ResumeTests(unittest.TestCase):
@@ -150,8 +201,11 @@ class OnAirTests(unittest.TestCase):
             class Voice:
                 sample_rate = 1000
 
-                def stream(self, text, last=True):
+                def stream(self, text, last=True, joined=False):
                     yield bytes(2 * 300)
+
+                def seconds(self, text):
+                    return .3
 
                 def end(self):
                     pass
@@ -164,8 +218,8 @@ class OnAirTests(unittest.TestCase):
             interpreter.mark(1)
             threading.Thread(target=interpreter.speak, daemon=True).start()
             before = time.time()
-            interpreter.queue(phrase, 'Hello there,', False)
-            interpreter.queue(phrase, 'how are you?', True)
+            interpreter.queue(phrase, 'Hello there,')
+            interpreter.queue(phrase, 'how are you?', last=True)
             phrase.segments.put(None)
 
             def pieces():
@@ -192,16 +246,120 @@ class OnAirTests(unittest.TestCase):
             self.assertFalse((state/'translate.showing').exists())
 
 
+class QueueTests(unittest.TestCase):
+    def test_a_piece_that_carries_on_inside_a_word_is_joined_to_it(self):
+        with tempfile.TemporaryDirectory(prefix='talkey-queue-') as tmp:
+            state, run = Path(tmp)/'state', Path(tmp)/'run'
+            state.mkdir(); run.mkdir()
+            env = {'TALKEY_TRANSLATE_RUN': str(run), 'TALKEY_STATE_DIR': str(state)}
+            os.environ.update(env)
+            self.addCleanup(lambda: [os.environ.pop(name) for name in env])
+            interpreter = worker.Interpreter(None, None, None)
+            phrase = worker.Phrase(time.monotonic(), 1)
+            interpreter.subtitles.append(phrase.shown)
+            interpreter.queue(phrase, 'Tomorrow I')
+            interpreter.queue(phrase, "'ll call you.", True, last=True)
+            self.assertEqual(phrase.shown['english'], "Tomorrow I'll call you.")
+            self.assertEqual([phrase.segments.get()[1:], phrase.segments.get()[1:]],
+                             [(False, False, False), (True, True, True)])
+
+
+class TimingTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix='talkey-timing-')
+        self.addCleanup(tmp.cleanup)
+        state, run = Path(tmp.name)/'state', Path(tmp.name)/'run'
+        state.mkdir(); run.mkdir()
+        env = {'TALKEY_TRANSLATE_RUN': str(run), 'TALKEY_STATE_DIR': str(state)}
+        os.environ.update(env)
+        self.addCleanup(lambda: [os.environ.pop(name) for name in env])
+
+        class Translate:
+            drafts = {'Hallo allemaal': 'Hello everyone, welcome to the meeting',
+                      'Hallo allemaal ik deel': 'Hello everyone, welcome to the meeting, I am sharing'}
+
+            def __call__(self, text, spoken=''):
+                return self.drafts[text], False
+
+            def ends(self, text):
+                return 0.0
+
+        class Voice:
+            sample_rate = 1000
+
+            def seconds(self, text):
+                return len(text) * .06
+
+        self.interpreter = worker.Interpreter(None, None, Translate())
+        self.interpreter.voice = Voice()
+        self.interpreter.first_audio.append(.25)
+        self.phrase = worker.Phrase(time.monotonic(), 1)
+        self.interpreter.subtitles.append(self.phrase.shown)
+
+    def say(self, *texts):
+        for text in texts:
+            self.interpreter.advance(self.phrase, text)
+
+    def test_a_piece_that_lasts_until_more_is_usually_settled_goes_out(self):
+        self.say('Hallo allemaal', 'Hallo allemaal ik deel')
+        self.assertEqual(self.phrase.segments.get()[0]['text'], 'Hello everyone, welcome to the meeting,')
+
+    def test_a_piece_is_held_while_the_voice_would_run_dry_before_more_is_settled(self):
+        self.interpreter.refill.extend([5.0] * 20)
+        self.say('Hallo allemaal', 'Hallo allemaal ik deel')
+        self.assertEqual(self.phrase.agreement.decision['result'], 'would-run-dry')
+        self.assertTrue(self.phrase.segments.empty())
+
+    def test_a_piece_waits_while_the_voice_has_enough_to_say(self):
+        self.interpreter.voice_end = time.monotonic() + 3
+        self.say('Hallo allemaal', 'Hallo allemaal ik deel')
+        self.assertEqual(self.phrase.agreement.decision['result'], 'voice-busy')
+
+    def test_the_pace_follows_what_is_waiting_and_what_is_expected(self):
+        interpreter = self.interpreter
+        interpreter.refill.extend([2.0] * 20)
+        interpreter.speaking = (self.phrase, False, 1.0)
+        self.assertEqual(interpreter.pace(), interpreter.speed_min)
+        interpreter.speaking = (self.phrase, False, 1.9)
+        self.assertAlmostEqual(interpreter.pace(), .95 * 1.9 / 2)
+        interpreter.speaking = (self.phrase, False, 4.0)
+        self.assertEqual(interpreter.pace(), interpreter.speed)
+        self.phrase.waiting = 1
+        self.assertEqual(interpreter.pace(), interpreter.speed_max)
+        self.phrase.waiting = 0
+        interpreter.speaking = (self.phrase, True, 1.0)
+        self.assertEqual(interpreter.pace(), interpreter.speed)
+        interpreter.lines.put(worker.Phrase(time.monotonic(), 2))
+        self.assertEqual(interpreter.pace(), interpreter.speed_max)
+
+    def test_a_tick_fills_a_wait_inside_a_sentence_only(self):
+        interpreter = self.interpreter
+        interpreter.tick_sound = b'TICK'
+        interpreter.ended = True
+        self.assertIsNone(interpreter.tick(None))
+        interpreter.ended = False
+        self.assertIsNotNone(interpreter.tick(None))
+
+
 class TranslatorTests(unittest.TestCase):
     def setUp(self):
-        self.requests = []
+        self.requests, self.generated, self.reply = [], [], None
+        self.logprobs = [{'token': '.', 'logprob': -1, 'top_logprobs': [
+            {'token': '.', 'logprob': math.log(.4)}, {'token': ' van', 'logprob': math.log(.3)},
+            {'token': '?', 'logprob': math.log(.1)}, {'token': '', 'logprob': math.log(.05)},
+            {'token': ',', 'logprob': math.log(.05)}, {'token': ' ', 'logprob': math.log(.05)}]}]
         test = self
 
         class Ollama(BaseHTTPRequestHandler):
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                test.requests.append(body)
-                reply = json.dumps({'message': {'content': f' "EN {len(test.requests)}" \n'}}).encode()
+                if self.path == '/api/generate':
+                    test.generated.append(body)
+                    reply = json.dumps({'response': '.', 'logprobs': test.logprobs}).encode()
+                else:
+                    test.requests.append(body)
+                    content = test.reply if test.reply is not None else f' "EN {len(test.requests)}" \n'
+                    reply = json.dumps({'message': {'content': content}}).encode()
                 self.send_response(200)
                 self.send_header('Content-Length', str(len(reply)))
                 self.end_headers()
@@ -221,9 +379,9 @@ class TranslatorTests(unittest.TestCase):
 
     def test_recent_phrases_are_context_and_quotes_are_dropped(self):
         translate = worker.Translator()
-        self.assertEqual(translate('warm'), 'EN 1')
+        self.assertEqual(translate('warm'), ('EN 1', False))
         for i in range(2, 6):
-            self.assertEqual(translate(f'nl {i}'), f'EN {i}')
+            self.assertEqual(translate(f'nl {i}'), (f'EN {i}', False))
             translate.remember(f'nl {i}', f'EN {i}')
         messages = self.requests[-1]['messages']
         prompt = translate.prompt
@@ -232,9 +390,34 @@ class TranslatorTests(unittest.TestCase):
                          [prompt + 'nl 2', 'EN 2', prompt + 'nl 3', 'EN 3', prompt + 'nl 4', 'EN 4', prompt + 'nl 5'])
         self.assertFalse(self.requests[-1]['stream'])
 
+    def test_the_sentence_end_chance_is_the_model_s_closing_tokens(self):
+        translate = worker.Translator()
+        translate.remember('Ik ben er.', 'I am here.')
+        self.assertAlmostEqual(translate.ends('Ik bel je morgen even op.'), .55)
+        body = self.generated[-1]
+        # The same Ollama, asked as a plain language model for one token, without the sentence end.
+        self.assertEqual(body['prompt'], 'Ik ben er. Ik bel je morgen even op')
+        self.assertTrue(body['raw'])
+        self.assertTrue(body['logprobs'])
+        self.assertEqual(body['options']['num_predict'], 1)
+
+    def test_no_token_probabilities_is_an_error(self):
+        self.logprobs = None
+        with self.assertRaisesRegex(RuntimeError, 'token probabilities'):
+            worker.Translator().ends('Hallo.')
+
+    def test_a_reply_that_carries_on_inside_the_last_word_says_so(self):
+        translate = worker.Translator()
+        self.reply = "'ll show it."
+        self.assertEqual(translate('Ik zal het laten zien.', spoken='I'), ("'ll show it.", True))
+        self.reply = ' will show it.'
+        self.assertEqual(translate('Ik zal het laten zien.', spoken='I'), ('will show it.', False))
+        self.reply = '. Then it.'
+        self.assertEqual(translate('Ik zal het laten zien.', spoken='I will.'), ('Then it.', False))
+
     def test_spoken_english_is_continued_without_its_sentence_end(self):
         translate = worker.Translator()
-        self.assertEqual(translate('heel de zin', spoken="Okay, I'm getting."), 'EN 1')
+        self.assertEqual(translate('heel de zin', spoken="Okay, I'm getting."), ('EN 1', False))
         # A prefill that ends a sentence makes the model stop, though the Dutch goes on.
         self.assertEqual(self.requests[-1]['messages'][-1], {'role': 'assistant', 'content': "Okay, I'm getting"})
 
@@ -270,27 +453,32 @@ class TranslateRuntimeTests(unittest.TestCase):
     class FakeVoice:
         sample_rate = 24000
         def __init__(self, path): pass
-        def stream(self, text, last=True): yield text.encode()
+        def stream(self, text, last=True, joined=False): yield text.encode()
+        def seconds(self, text): return len(text) * .1
         def end(self): pass
     class FakeTranslator:
         def __call__(self, text, spoken=''):
             if (root/'fail-translator').exists(): raise RuntimeError('test translator down')
             english = 'EN:' + text
-            return english[len(spoken):].strip() if spoken and english.startswith(spoken) else english
+            return (english[len(spoken):].strip() if spoken and english.startswith(spoken) else english), False
         def remember(self, text, english): pass
+        def ends(self, text):
+            return float((root/'ends').read_text()) if (root/'ends').exists() else 0.0
+    def words(text):
+        return text, [(word, .1 if word.startswith('~') else 1.0) for word in text.split()], 0.0
     def heard(*args):
         with (root/'prompts').open('a') as f: f.write(json.dumps(args[3])+'\\n')
         lines=(root/'heard').read_text().splitlines()
         (root/'heard').write_text(''.join(line + '\\n' for line in lines[1:]))
-        return lines[0]
+        return words(lines[0])
     def previewed(*args):
         path = root/'preview-lines'
-        if not path.exists(): return 'voorlopig'
+        if not path.exists(): return words('voorlopig')
         lines = path.read_text().splitlines()
         if len(lines) > 1: path.write_text(''.join(line + '\\n' for line in lines[1:]))
-        return lines[0]
-    ns['main'].__globals__.update(Silero=FakeVad, Voice=FakeVoice, Translator=FakeTranslator, transcribe=heard,
-                                  preview=previewed)
+        return words(lines[0])
+    ns['main'].__globals__.update(Silero=FakeVad, Voice=FakeVoice, Translator=FakeTranslator,
+                                  transcribe_words=heard, preview=previewed)
     sys.argv=sys.argv[1:]
     sys.exit(ns['main']())
 '''
@@ -397,6 +585,25 @@ class TranslateRuntimeTests(unittest.TestCase):
         log = (self.state/'translate.current/lines.log').read_text()
         self.assertIn('spoken as: EN:een twee | drie vier.', log)
         self.assertRegex(log, r'voice began [0-9.]+s after you did, -[0-9.]+s from your pause')
+
+    def test_only_words_whisper_stands_by_are_translated(self):
+        self.env.update(TALKEY_TRANSLATE_PREVIEW_MS='100', TALKEY_TRANSLATE_TRACE='1')
+        self.listen()
+        # "twee" changes in the next preview, and whisper is unsure of "vier" until a third preview agrees.
+        (self.root/'preview-lines').write_text('een twee\neen drie ~vier\neen drie ~vier vijf\n')
+        (self.root/'heard').write_text('een drie vier vijf.\n')
+        self.mute.unlink()
+        self.wait_for(lambda: (self.root/'preview-lines').read_text().startswith('een drie ~vier vijf'))
+        time.sleep(.3)
+        self.mute.touch()
+        trace = self.state/'translate.current/trace.jsonl'
+        self.wait_for(lambda: trace.exists() and '"event": "spoken"' in trace.read_text())
+        events = [json.loads(line) for line in trace.read_text().splitlines()]
+        sources = [e['source'] for e in events if e['event'] == 'draft']
+        self.assertEqual(sorted(set(sources), key=sources.index), ['een', 'een drie', 'een drie ~vier vijf'])
+        self.assertEqual([e['trusted'] for e in events if e['event'] == 'preview'][:4], [0, 1, 2, 4])
+        # The final transcript after the pause is trusted whole.
+        self.assertEqual(next(e['source'] for e in events if e['event'] == 'final_draft'), 'een drie vier vijf.')
 
     def test_a_tick_fills_the_wait_between_pieces_only(self):
         sounds = self.root/'sounds'; sounds.mkdir()

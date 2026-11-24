@@ -165,9 +165,32 @@ unrecovered takes.
 `translate.current` selects the run directory, fenced the same way as auto mode.
 The worker owns no takes and types nothing. Its main thread captures audio and
 runs VAD. While a phrase is heard, a preview worker transcribes it every 250 ms
-and translates all of it, continuing the English already spoken; `Agreement`
-decides which earlier draft is safe to speak (a later preview heard more Dutch
-after the same words, and the later draft still starts with that English). At
+with whisper's `verbose_json`, and translates the words it can trust: the start
+that this and the previous transcript share. A word whose probability (that of
+its least likely token) is below `TALKEY_TRANSLATE_WORD_P` must also be in the
+transcript before that: whisper splits its probability between spellings of
+the same word, such as `Er` and `er`, so a low one only asks for more agreement.
+It continues the English already spoken. The same Dutch after the same English
+is not translated again. `Agreement`
+decides which English is settled: the words the draft shares from its start
+with the latest draft made from less of the same Dutch. English is also
+settled when the model, asked through `/api/generate` as a raw
+language model for one token, gives at least `TALKEY_TRANSLATE_END_P` to a
+sentence end after the Dutch so far: end of text, a new line, or a token that
+starts with `.`, `?` or `!`. Such a whole draft stays settled while later
+previews keep its Dutch. The worker then decides from times it measures during
+the session: settled English waits while the voice has more audio left than its
+mean time to first audio plus the mean time between previews (`voice-busy`),
+and it waits while the audio in hand, at the slowest pace, would not last the
+mean time from one piece being handed over to the next being settled
+(`would-run-dry`, scaled by `TALKEY_TRANSLATE_GUARD`). The voice asks for a
+pace before each chunk; `lib/stretch.py` moves its nominal input place on by
+the speed of each window, so the pace can change mid-piece. It is
+`TALKEY_TRANSLATE_SPEED_MAX` while pieces wait behind the one being said, or
+the next phrase has begun; otherwise slower, down to `_MIN`, in proportion to
+the English in hand against that usual wait. A tick fills a wait only after a
+piece that did not end a sentence. When the model carries on inside the last spoken word, as `'ll` after `I`,
+the piece is joined to it without a space, in the text and in the voice. At
 the pause a recognition thread transcribes the whole phrase and translates the
 rest. Both hold the phrase's lock, so the final step waits for a running
 preview. A speech thread takes phrases in the order they began and streams

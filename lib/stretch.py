@@ -7,6 +7,7 @@ class Stretch:
 
     Each output window is the input window near its nominal place that best continues the
     previous one, overlap-added. Below 1 speech gets slower: windows overlap more in the input.
+    The speed may change between pushes; the nominal place moves on by the speed of each window.
     """
     WINDOW_S = 0.03
 
@@ -21,12 +22,15 @@ class Stretch:
     def reset(self):
         self.input = np.zeros(0)
         self.base = 0
-        self.count = 0
+        self.position = 0.0
         self.last = None
         self.tail = None
 
+    def idle(self):
+        return self.last is None and not len(self.input)
+
     def push(self, pcm):
-        if self.speed == 1:
+        if self.speed == 1 and self.idle():
             return pcm
         self.input = np.concatenate([self.input, np.frombuffer(pcm, np.int16)])
         out = []
@@ -37,30 +41,27 @@ class Stretch:
             else:
                 out.append(self.tail + frame[:self.hop] * self.window[:self.hop])
             self.tail = frame[self.hop:] * self.window[self.hop:]
-            self.last, self.count = x, self.count + 1
-            keep = min(self.nominal(self.count) - self.slack, x + self.hop)
+            self.last, self.position = x, self.position + self.hop * self.speed
+            keep = min(round(self.position) - self.slack, x + self.hop)
             self.input, self.base = self.input[keep - self.base:], keep
         return self.pcm(out)
 
     def flush(self):
         """The rest of the utterance, unstretched from where the last window left off."""
-        if self.speed == 1:
+        if self.idle():
             return b''
         start = 0 if self.last is None else self.last + self.hop - self.base
         rest = self.input[start:]
         self.reset()
         return self.pcm([rest])
 
-    def nominal(self, count):
-        return round(count * self.hop * self.speed)
-
     def place(self):
         """Input position of the next window, or None until enough input has arrived."""
         end = self.base + len(self.input)
         if self.last is None:
             return 0 if end >= self.size else None
-        low = max(self.nominal(self.count) - self.slack, self.base)
-        high = self.nominal(self.count) + self.slack
+        low = max(round(self.position) - self.slack, self.base)
+        high = round(self.position) + self.slack
         ref = self.last + self.hop
         if max(high, ref) + self.size > end:
             return None

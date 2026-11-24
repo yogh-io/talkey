@@ -73,6 +73,24 @@ class StretchTests(unittest.TestCase):
         run(stretch, first, 1920)
         self.assertEqual(run(stretch, second, 1920), run(Stretch(0.95, RATE), second, 1920))
 
+    def test_a_speed_change_between_pushes_changes_the_length_from_there(self):
+        pcm, half = voice(4), len(voice(2))
+        stretch = Stretch(0.85, RATE)
+        out = stretch.push(pcm[:half])
+        stretch.speed = 1.15
+        out += stretch.push(pcm[half:]) + stretch.flush()
+        # Two seconds at 0.85 and two at 1.15 take about as long as four at 1.
+        self.assertAlmostEqual(len(out) / len(pcm), (1 / 0.85 + 1 / 1.15) / 2, delta=0.02)
+
+    def test_speed_one_in_the_middle_of_an_utterance_keeps_going(self):
+        pcm, half = voice(2), len(voice(1))
+        stretch = Stretch(0.9, RATE)
+        out = stretch.push(pcm[:half])
+        stretch.speed = 1
+        out += stretch.push(pcm[half:]) + stretch.flush()
+        self.assertAlmostEqual(len(out) / len(pcm), (1 / 0.9 + 1) / 2, delta=0.02)
+        self.assertEqual(out[-400:], pcm[-400:])
+
 
 if __name__ == '__main__':
     unittest.main()

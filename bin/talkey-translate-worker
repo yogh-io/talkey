@@ -18,10 +18,12 @@ from pathlib import Path
 import queue
 import re
 import signal
+import statistics
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 import wave
 
@@ -31,12 +33,10 @@ for data in (Path(os.environ.get('TALKEY_DATA_DIR', '/nonexistent')),
         sys.path.insert(0, str(data / 'lib'))
         DATA_DIR = data
         break
-from speech import transcribe
+from speech import transcribe_words
 from vad import FRAME_BYTES, FRAME_MS, Endpoint, Silero, setting
 
 LANGUAGES = {'nl': 'Dutch', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'it': 'Italian', 'pt': 'Portuguese'}
-# Punctuation the translation model itself wrote; a later piece ends at one, so it ends a clause.
-PIECE_END = re.compile(r'[,.;:?!…]["”’)]*$')
 # While a phrase waits for its next piece, a tick after this much quiet, then every so often.
 TICK_AFTER_S = 0.3
 TICK_EVERY_S = 0.5
@@ -71,86 +71,121 @@ def unfinished(english):
     return re.sub(r'[\s.!?…]+$', '', english).strip()
 
 
+def closes(token):
+    """A next token that ends the sentence: end of text, a new line, or a closing mark."""
+    if not token or '\n' in token or token.startswith('<'):
+        return True
+    return token.strip()[:1] in ('.', '?', '!')
+
+
 class Agreement:
-    """Which English of a phrase is safe to speak before the phrase ends.
+    """Which English of a phrase is settled enough to speak before the phrase ends.
 
-    Each draft continues the English already spoken, for all the Dutch heard so far. An earlier
-    draft is safe once a later preview heard more Dutch after the same words, and the later draft
-    still starts with the earlier English and adds more. A guessed verb changes when the real one
-    is heard, so it is never spoken. Speaking a draft whose end then changed is what dropped words.
+    Each draft continues the English already spoken, for all the trusted Dutch so far. English is
+    settled in two ways. Its first words are the same as in the latest draft made from less of the
+    same Dutch: hearing more did not change them. Or the model says a sentence may end after this
+    Dutch: then the whole draft stands, while whisper keeps hearing that Dutch. A guessed verb
+    changes when the real one is heard, so it is not settled.
     """
-    FIRST_WORDS = 2
-    WORDS = 3
-    # Once the voice has been quiet this long, a later piece need not end at a clause.
-    CLAUSE_WAIT_S = 1.0
-
-    def __init__(self, step_s):
-        # A later piece waits until the voice is about to run out, so pieces stay large.
-        self.room_s = step_s + 0.5
+    def __init__(self, end_p=1.0):
+        self.end_p = end_p
         self.said = []
         self.spoken = ''
+        # Earlier drafts as (Dutch words, English words), and the latest whole draft.
         self.drafts = []
+        self.whole = None
+        # What offer found settled, until it is spoken or the next offer replaces it.
+        self.settled = None
         # What the last offer decided and the piece it was about, for the trace.
         self.decision = None
 
     def hold(self, reason, piece=None):
-        self.decision = {'result': reason, 'piece': ' '.join(piece) if piece else None}
+        self.decision = {'result': reason, 'piece': piece}
 
-    def offer(self, words, english, voice_left_s):
-        """Record a draft for the Dutch words heard so far; return a piece to speak now, or None.
+    def offer(self, words, english, ends=0.0, joined=False):
+        """Record a draft for the trusted Dutch words; return the English settled so far, or None.
 
-        voice_left_s: seconds of English still to play; negative is how long the voice has been quiet.
+        ends: the model's chance that a sentence ends after these words. joined: the draft carries
+        on inside the last spoken word, as "'ll" after "I".
         """
         start = resume(self.said, words)
-        heard, written = words_of(words[start:]), english.split()
-        drafted = words_of(written)
-        # Why the latest earlier draft is not kept, if it is not.
-        held, unsettled = [], 'first-draft'
-        for old_words, old_english in self.drafts:
-            before, kept = words_of(old_words), words_of(old_english.split())
-            if not (kept and len(before) < len(heard)):
-                unsettled = 'no-new-dutch'
-            elif heard[:len(before)] != before:
-                unsettled = 'dutch-changed'
-            elif not (len(drafted) > len(kept) and drafted[:len(kept)] == kept):
-                unsettled = 'english-changed'
-            else:
-                held.append((len(kept), len(old_words)))
-        self.drafts.append((words[start:], english))
-        pieces = []
-        for count, dutch in held:
-            # Those English words as the newer draft writes them, so its comma stays.
-            piece, seen = [], 0
-            for token in written:
-                if seen == count:
-                    break
-                piece.append(token)
-                seen += 1 if bare(token) else 0
-            pieces.append((count, dutch, piece))
-        if not pieces:
-            return self.hold(unsettled)
-        if self.spoken and voice_left_s > -self.CLAUSE_WAIT_S:
-            longest = max(pieces, key=lambda p: (p[0], p[1]))[2]
-            pieces = [p for p in pieces if PIECE_END.search(p[2][-1])]
-            if not pieces:
-                return self.hold('no-clause-end', longest)
-        count, dutch, piece = max(pieces, key=lambda p: (p[0], p[1]))
-        if count < (self.WORDS if self.spoken else self.FIRST_WORDS):
-            return self.hold('too-few-words', piece)
-        if self.spoken and voice_left_s > self.room_s:
-            return self.hold('voice-busy', piece)
+        dutch, written = words[start:], english.split()
+        heard, drafted = words_of(dutch), words_of(written)
+        if ends >= self.end_p and drafted:
+            self.whole = (dutch, written, joined)
+        elif self.whole and heard[:len(words_of(self.whole[0]))] != words_of(self.whole[0]):
+            self.whole = None
+        found, reason = [], 'dutch-changed' if self.drafts else 'first-draft'
+        for before, kept in reversed(self.drafts):
+            if len(words_of(before)) < len(heard) and heard[:len(words_of(before))] == words_of(before):
+                count = 0
+                while count < min(len(kept), len(drafted)) and kept[count] == drafted[count]:
+                    count += 1
+                if count:
+                    found.append((count, len(before), self.take(written, count), joined, 'agreed'))
+                else:
+                    reason = 'no-agreement'
+                break
+        if self.drafts and words_of(self.drafts[-1][0]) == heard:
+            self.drafts.pop()
+        self.drafts.append((dutch, drafted))
+        if self.whole:
+            before, piece, attached = self.whole
+            found.append((len(words_of(piece)), len(before), piece, attached, 'end'))
+        if not found:
+            self.settled = None
+            return self.hold(reason)
+        count, said, piece, attached, via = max(found, key=lambda option: (option[0], option[1]))
         text = re.sub(r'^[\s.,;:!?…]+', '', ' '.join(piece))
-        self.said = words[:start + dutch]
-        self.spoken = f'{self.spoken} {text}'.strip()
-        self.drafts = []
-        self.hold('spoken', [text])
-        self.decision['dutch'] = ' '.join(words[start:start + dutch])
+        self.settled = (text, attached, words[:start + said], ' '.join(words[start:start + said]), via)
+        self.hold('settled', text)
         return text
+
+    @staticmethod
+    def take(tokens, count):
+        """The first count words, as the draft writes them, so its punctuation stays."""
+        piece, seen = [], 0
+        for token in tokens:
+            if seen == count:
+                break
+            piece.append(token)
+            seen += 1 if bare(token) else 0
+        return piece
+
+    def commit(self):
+        """The settled English is being spoken; return it, whether it joins the last word, and
+        whether the model said its sentence may end there."""
+        text, joined, self.said, dutch, via = self.settled
+        self.spoken = self.spoken + text if joined else f'{self.spoken} {text}'.strip()
+        self.drafts, self.whole, self.settled = [], None, None
+        self.decision = {'result': 'spoken', 'piece': text, 'dutch': dutch, 'via': via}
+        return text, joined, via == 'end'
 
 
 def preview(pcm, url, language, prompt):
-    """Transcript of the phrase so far, for the subtitles."""
-    return transcribe(pcm, url, language, prompt, 16000, 1)
+    """Transcript of the phrase so far, its words with whisper's probabilities, and its chance of no speech."""
+    return transcribe_words(pcm, url, language, prompt, 16000, 1)
+
+
+def settled(words, earlier, least):
+    """The words, from the start, that the latest transcripts agree on.
+
+    Whisper splits its probability between spellings of the same word, such as "Er" and "er" or
+    "ja" and "ja,", so a low one does not make a word wrong; it only asks for more agreement. A word
+    it is sure of is trusted when the previous transcript had it in the same place, another one
+    when the two before did too.
+    """
+    heard, trusted = [bare(word) for word, _ in words], []
+    for i, (word, probability) in enumerate(words):
+        agreeing = 0
+        for before in reversed(earlier):
+            if before[:i + 1] != heard[:i + 1]:
+                break
+            agreeing += 1
+        if agreeing < (1 if probability >= least else 2):
+            break
+        trusted.append((word, probability))
+    return trusted
 
 
 def wait_sound(rate):
@@ -246,15 +281,24 @@ class Phrase:
         self.lock = threading.Lock()
         self.closed = False
         self.agreement = None
-        self.english = []
-        # (English, last piece of the phrase) to speak, then None.
+        # The bare words of the latest previews, and the latest draft with what it was made from.
+        self.heard = deque(maxlen=2)
+        self.drafted = None
+        self.english = ''
+        # (piece, last piece of the phrase, joins the last word, ends a sentence) to speak, then None.
         self.segments = queue.Queue()
+        # Pieces queued and not yet taken by the voice; when the last piece was handed over and
+        # when the latest preview started, for the session's timing.
+        self.waiting = 0
+        self.committed_at = None
+        self.previewed_at = None
 
 
 class Translator:
     """Ollama chat in TranslateGemma's own prompt format; recent phrases are context."""
     def __init__(self):
         self.url = os.environ.get('TALKEY_TRANSLATE_URL', 'http://127.0.0.1:11434/api/chat')
+        self.generate_url = urllib.parse.urljoin(self.url, '/api/generate')
         self.model = os.environ.get('TALKEY_TRANSLATE_LLM', 'translategemma:4b')
         self.options = {'temperature': 0, 'num_ctx': 2048}
         layers = os.environ.get('TALKEY_TRANSLATE_GPU_LAYERS')
@@ -271,7 +315,10 @@ class Translator:
         self.history = deque(maxlen=3)
 
     def __call__(self, text, spoken=''):
-        """English for text; with spoken, only what follows the English already spoken."""
+        """English for text; with spoken, only what follows the English already spoken.
+
+        Also says whether that carries on inside the last spoken word, as "'ll" after "I".
+        """
         messages = []
         for source, english in self.history:
             messages += [{'role': 'user', 'content': self.prompt + source}, {'role': 'assistant', 'content': english}]
@@ -279,12 +326,28 @@ class Translator:
         spoken = unfinished(spoken)
         if spoken:
             messages.append({'role': 'assistant', 'content': spoken})
-        body = json.dumps({'model': self.model, 'messages': messages, 'stream': False, 'think': False,
-                           'keep_alive': '30m', 'options': self.options}).encode()
-        request = urllib.request.Request(self.url, data=body, headers={'Content-Type': 'application/json'})
+        reply = self.post(self.url, {'model': self.model, 'messages': messages, 'stream': False, 'think': False,
+                                     'keep_alive': '30m', 'options': self.options})['message']['content']
+        reply = re.sub(r'\s+', ' ', reply)
+        english = re.sub(r'^[\s.,;:!?…]+', '', reply.strip().strip('"“”'))
+        return english, bool(spoken and english) and reply[:1] == english[:1]
+
+    def ends(self, text):
+        """The model's chance that a sentence ends right after text, read from its next token."""
+        context = ' '.join(source for source, _ in self.history)
+        prompt = (context + ' ' + re.sub(r'[\s.,;:!?…]+$', '', text)).strip()
+        reply = self.post(self.generate_url, {
+            'model': self.model, 'prompt': prompt, 'raw': True, 'stream': False, 'keep_alive': '30m',
+            'logprobs': True, 'top_logprobs': 20, 'options': {**self.options, 'num_predict': 1}})
+        if not reply.get('logprobs'):
+            raise RuntimeError('Ollama returned no token probabilities; update Ollama')
+        return sum(math.exp(top['logprob']) for top in reply['logprobs'][0]['top_logprobs'] if closes(top['token']))
+
+    @staticmethod
+    def post(url, body):
+        request = urllib.request.Request(url, data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'})
         with urllib.request.urlopen(request, timeout=30) as response:
-            reply = json.load(response)['message']['content']
-        return re.sub(r'^[\s.,;:!?…]+', '', re.sub(r'\s+', ' ', reply).strip().strip('"“”'))
+            return json.load(response)
 
     def remember(self, text, english):
         """A finished phrase becomes context for the next ones."""
@@ -298,8 +361,7 @@ class Voice:
     A piece after the first is generated with the previous piece's text and its generated frames
     forced in front, so it carries on instead of starting a new sentence. A piece that is not
     the last loses its end-of-speech tail, which would otherwise sound like a sentence ending.
-    Each piece is slowed down a little without changing its pitch, which gives the next piece time
-    to arrive before the voice runs out.
+    The pace changes without changing the pitch: pace() is asked before each chunk.
     """
     TAIL_FRAMES = 3
     # Leading silence below this level is skipped, keeping a little before the voice begins.
@@ -322,28 +384,36 @@ class Voice:
         self.state = self.model.get_state_for_audio_prompt(path)
         self.sample_rate = self.model.sample_rate
         self.frame_samples = round(self.sample_rate / self.model.mimi.frame_rate)
-        self.stretch = Stretch(setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5), self.sample_rate)
+        speed = setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5)
+        self.stretch = Stretch(speed, self.sample_rate)
+        self.pace = lambda: speed
+        # Seconds of voice per character at its own pace, over the latest pieces.
+        self.rates = deque(maxlen=20)
         self.previous = None
 
-    def stream(self, text, last=True):
-        """PCM for one piece of the current phrase; last ends the utterance."""
+    def seconds(self, text):
+        """How long text takes to say at the voice's own pace, from the pieces it has said."""
+        return len(text) * statistics.fmean(self.rates)
+
+    def stream(self, text, last=True, joined=False):
+        """PCM for one piece of the current phrase; last ends the utterance, joined continues the last word."""
         m = self.model
         chunks = self.split(m.flow_lm.conditioner.tokenizer, text, 25, m.pad_with_spaces_for_short_inputs,
                             remove_semicolons=m.remove_semicolons, append_terminal_punctuation=False,
                             capitalize_first_letter=False, replace_characters=m.replace_characters)
         for i, chunk in enumerate(chunks):
-            yield from self.piece(chunk, last and i == len(chunks) - 1)
+            yield from self.piece(chunk, last and i == len(chunks) - 1, joined and i == 0)
 
-    def piece(self, text, last):
+    def piece(self, text, last, joined=False):
         m, tail = self.model, self.TAIL_FRAMES * self.frame_samples * 2
         context, forced = text, None
         if self.previous:
-            context, forced = f'{self.previous[0]} {text}', self.previous[1]
+            context, forced = self.previous[0] + ('' if joined else ' ') + text, self.previous[1]
         options = (m.pad_with_spaces_for_short_inputs, m.remove_semicolons, last,
                    m.capitalize_first_letter, m.replace_characters)
         prompt, _ = self.prepare(context, *options)
         _, after = self.prepare(text, *options)
-        latents, held, onset = [], b'', forced is None
+        latents, held, onset, made = [], b'', forced is None, 0
         for chunk in m._generate_audio_stream_short_text(self.state, prompt, after + 2, True,
                                                          threading.Event(), latents_out=latents,
                                                          forced_latents=forced):
@@ -356,11 +426,15 @@ class Voice:
             # The tail is only known to be unwanted once the piece turns out not to be the last.
             ready = len(held) if last else len(held) - tail
             if ready > 0:
+                self.stretch.speed = self.pace()
                 if pcm := self.stretch.push(held[:ready]):
                     yield pcm
+                made += ready
                 held = held[ready:]
         if pcm := self.stretch.flush():
             yield pcm
+        if made and text.strip():
+            self.rates.append(made / 2 / self.sample_rate / len(text))
         frames = self.torch.cat(latents, 1) if latents else None
         if last or frames is None or frames.shape[1] <= self.TAIL_FRAMES + 4:
             self.previous = None
@@ -393,6 +467,22 @@ class Interpreter:
         self.lines = queue.Queue()
         self.preview_s = setting('TRANSLATE_PREVIEW_MS', '250', 100, 10000) / 1000
         self.preview_frames = math.ceil(self.preview_s * 1000 / FRAME_MS)
+        self.end_p = setting('TRANSLATE_END_P', '0.2', 0.01, 1)
+        self.word_p = setting('TRANSLATE_WORD_P', '0.5', 0, 1)
+        self.speed = setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5)
+        self.speed_min = setting('TRANSLATE_SPEED_MIN', '0.85', 0.5, 1.5)
+        self.speed_max = setting('TRANSLATE_SPEED_MAX', '1.15', 0.5, 1.5)
+        self.dry_guard = setting('TRANSLATE_GUARD', '1', 0, 10)
+        # Measured as the session goes: seconds from a piece being handed to the voice until the
+        # next one is settled (starting from a guess), the voice's time to its first audio, and the
+        # time between previews.
+        self.refill = deque([1.0], maxlen=20)
+        self.first_audio = deque(maxlen=20)
+        self.cycle = deque([self.preview_s], maxlen=20)
+        # The phrase and piece the voice is saying, and the seconds of English it had in hand then.
+        self.speaking = None
+        # Whether the last piece played ended a sentence; a tick only fills a wait inside one.
+        self.ended = True
         # When the English already sent to the players will have finished playing.
         self.voice_end = 0.0
         self.tick_sound = None
@@ -451,16 +541,17 @@ class Interpreter:
                     marker.unlink(missing_ok=True)
                 self.showing = showing
 
-    def queue(self, phrase, text, last):
-        """Hand a piece of English to the voice."""
+    def queue(self, phrase, text, joined=False, ended=False, last=False, **trace):
+        """Hand a piece of English to the voice; joined carries on inside the last word."""
         piece = {'text': text, 'start': None, 'end': None}
-        phrase.english.append(text)
-        self.trace(phrase, 'queue', text=text, last=last)
+        phrase.english = phrase.english + text if joined else f'{phrase.english} {text}'.strip()
+        self.trace(phrase, 'queue', text=text, last=last, **trace)
         with self.lock:
             phrase.shown['pieces'].append(piece)
-            phrase.shown['english'] = ' '.join(phrase.english)
+            phrase.shown['english'] = phrase.english
+            phrase.waiting += 1
             self.show()
-        phrase.segments.put((piece, last))
+        phrase.segments.put((piece, last, joined, ended or last))
 
     def on_air(self, piece, **times):
         """Publish when a piece starts and stops playing, in Unix time so the HUD can compare it to its clock."""
@@ -475,29 +566,67 @@ class Interpreter:
                 if phrase.closed:
                     return
                 sent = time.monotonic()
-                text = preview(pcm, self.url, self.language, prompt)
+                if phrase.previewed_at is not None:
+                    self.cycle.append(sent - phrase.previewed_at)
+                phrase.previewed_at = sent
+                text, words, _ = preview(pcm, self.url, self.language, prompt)
+                # Only what whisper stands by is translated; the subtitles show all of it.
+                trusted = settled(words, phrase.heard, self.word_p)
+                phrase.heard.append([bare(word) for word, _ in words])
                 self.trace(phrase, 'preview', audio_s=round(len(pcm) / 32000, 3), text=text,
-                           heard_to=phrase.audio_from + len(pcm) / 32000, latency=round(time.monotonic() - sent, 3))
+                           heard_to=phrase.audio_from + len(pcm) / 32000, latency=round(time.monotonic() - sent, 3),
+                           trusted=len(trusted), low=round(min((p for _, p in trusted), default=1), 3))
                 with self.lock:
                     phrase.shown['dutch'] = text
                     self.show()
                 if self.stream and re.search(r'\w', text):
-                    self.advance(phrase, text)
+                    self.advance(phrase, ' '.join(word for word, _ in trusted))
         except Exception as error:
             print(f'talkey translate: preview failed: {error}', file=sys.stderr)
 
     def advance(self, phrase, text):
         """Draft the English for the phrase so far and speak what the drafts agree on."""
         if phrase.agreement is None:
-            phrase.agreement = Agreement(self.preview_s)
-        spoken, sent = phrase.agreement.spoken, time.monotonic()
-        draft = self.translate(text, spoken)
-        self.trace(phrase, 'draft', source=text, spoken=spoken, english=draft, latency=round(time.monotonic() - sent, 3))
-        voice_left = self.voice_end - time.monotonic()
-        piece = phrase.agreement.offer(text.split(), draft, voice_left)
-        self.trace(phrase, 'agree', voice_left=round(voice_left, 3), **phrase.agreement.decision)
+            phrase.agreement = Agreement(self.end_p)
+        words, spoken = text.split(), phrase.agreement.spoken
+        if not words_of(words[resume(phrase.agreement.said, words):]):
+            self.trace(phrase, 'agree', result='dutch-unsettled', piece=None)
+            return
+        # The same Dutch after the same English gives the same draft.
+        if phrase.drafted and phrase.drafted[0] == (text, spoken):
+            draft, joined, ends = phrase.drafted[1]
+        else:
+            sent = time.monotonic()
+            draft, joined = self.translate(text, spoken)
+            ends = self.translate.ends(text)
+            phrase.drafted = ((text, spoken), (draft, joined, ends))
+            self.trace(phrase, 'draft', source=text, spoken=spoken, english=draft, ends=round(ends, 3),
+                       latency=round(time.monotonic() - sent, 3))
+        agreement = phrase.agreement
+        piece = agreement.offer(words, draft, ends, joined)
+        now = time.monotonic()
+        voice_left, cover = self.voice_end - now, 0.0
+        if piece and phrase.committed_at is not None:
+            self.refill.append(now - phrase.committed_at)
+            phrase.committed_at = None
         if piece:
-            self.queue(phrase, piece, False)
+            # Seconds of English in hand with this piece, if the voice slows to its slowest pace.
+            cover = max(0.0, voice_left) + self.voice.seconds(piece) / self.speed_min
+            if voice_left > statistics.fmean(self.first_audio) + statistics.fmean(self.cycle):
+                # Later is better while the voice has enough: more of the English is settled by then.
+                agreement.hold('voice-busy', piece)
+                piece = None
+            elif cover < statistics.fmean(self.refill) * self.dry_guard:
+                # The voice would run dry in the middle of a sentence before more is settled.
+                agreement.hold('would-run-dry', piece)
+                piece = None
+            else:
+                piece = agreement.commit()
+                phrase.committed_at = now
+        self.trace(phrase, 'agree', voice_left=round(voice_left, 3), ends=round(ends, 3), **agreement.decision)
+        if piece:
+            self.queue(phrase, *piece, last=False, cover=round(cover, 3),
+                       refill=round(statistics.fmean(self.refill), 3))
 
     def call(self, action):
         child = subprocess.Popen([self.command, '_translate', action], env=dict(os.environ))
@@ -528,9 +657,9 @@ class Interpreter:
             pcm, phrase = self.phrases.get()
             sent = time.monotonic()
             # The last sentences steer whisper toward words that fit what was being said.
-            text = transcribe(pcm, self.url, self.language, ' '.join(self.recent) or None, 16000, 1)
+            text, _, no_speech = transcribe_words(pcm, self.url, self.language, ' '.join(self.recent) or None, 16000, 1)
             self.trace(phrase, 'final_asr', audio_s=round(len(pcm) / 32000, 3), text=text,
-                       latency=round(time.monotonic() - sent, 3))
+                       latency=round(time.monotonic() - sent, 3), no_speech=round(no_speech, 4))
             with phrase.lock:
                 phrase.closed = True
                 self.trace(phrase, 'closed')
@@ -546,19 +675,19 @@ class Interpreter:
                 with self.lock:
                     phrase.shown.update(dutch=text, live=False)
                     self.show()
-                words, agreement = text.split(), phrase.agreement or Agreement(self.preview_s)
+                words, agreement = text.split(), phrase.agreement or Agreement(self.end_p)
                 if re.search(r'\w', ' '.join(words[resume(agreement.said, words):])):
                     sent = time.monotonic()
-                    english = self.translate(text, agreement.spoken)
+                    english, joined = self.translate(text, agreement.spoken)
                     self.trace(phrase, 'final_draft', source=text, spoken=agreement.spoken, english=english,
                                latency=round(time.monotonic() - sent, 3))
                     if english:
-                        self.queue(phrase, english, True)
+                        self.queue(phrase, english, joined, last=True)
                 with self.lock:
                     phrase.shown['done'] = True
                     self.show()
                 phrase.segments.put(None)
-                self.translate.remember(text, ' '.join(phrase.english))
+                self.translate.remember(text, phrase.english)
 
     def send(self, pcm, record):
         """Play audio and return when it starts; record collects what the microphone carried, silences too."""
@@ -601,12 +730,18 @@ class Interpreter:
                     continue
                 if item is None:
                     break
-                piece, last = item
+                piece, last, joined, ended = item
                 pieces.append(piece['text'])
-                start = None
-                self.trace(phrase, 'tts_start', text=piece['text'])
-                for i, chunk in enumerate(self.voice.stream(piece['text'], last)):
+                start, began = None, time.monotonic()
+                with self.lock:
+                    phrase.waiting -= 1
+                cover = max(0.0, self.voice_end - began) + self.voice.seconds(piece['text']) / self.speed
+                self.speaking = (phrase, last, cover)
+                self.trace(phrase, 'tts_start', text=piece['text'], pace=round(self.pace(), 3))
+                for i, chunk in enumerate(self.voice.stream(piece['text'], last, joined)):
                     now = time.monotonic()
+                    if start is None:
+                        self.first_audio.append(now - began)
                     if first is None:
                         first = now
                     # The players had run out of English: silence the listener heard.
@@ -624,12 +759,13 @@ class Interpreter:
                 if start is None:
                     start = max(time.monotonic(), self.played_end)
                 self.on_air(piece, start=start, end=max(start, self.played_end))
+                self.ended = ended
                 self.trace(phrase, 'tts_end', text=piece['text'])
                 self.trace(phrase, 'play', text=piece['text'], start=start, end=max(start, self.played_end))
             self.voice.end()
             self.trace(phrase, 'spoken', end=self.played_end if first is not None else None)
             if first is not None:
-                entry = (f'{phrase.shown["dutch"]}\n  -> {" ".join(phrase.english)}\n'
+                entry = (f'{phrase.shown["dutch"]}\n  -> {phrase.english}\n'
                          f'  spoken as: {" | ".join(pieces)}\n'
                          f'  voice began {first - phrase.started:.2f}s after you did, '
                          f'{first - phrase.ended:+.2f}s from your pause\n'
@@ -641,14 +777,26 @@ class Interpreter:
                     log.write(entry)
             self.mark(-1)
 
+    def pace(self):
+        """The voice's pace now: faster while English waits behind it, slower while none is coming
+        soon, so the English in hand lasts until the next piece is usually settled."""
+        if self.speaking is None:
+            return self.speed
+        phrase, last, cover = self.speaking
+        if phrase.waiting or (last and not self.lines.empty()):
+            return self.speed_max
+        if last:
+            return self.speed
+        return min(self.speed, max(self.speed_min, self.speed * cover / statistics.fmean(self.refill)))
+
     def tick(self, record):
-        """Between pieces of a phrase, tick softly so listeners know the speaker has not stopped.
+        """Inside a sentence, tick softly while the voice waits, so listeners know the speaker has not stopped.
 
         The tick is not English, so it does not move voice_end: the pieces still go out as
-        soon as the voice needs them.
+        soon as the voice needs them. After a piece that may end a sentence, silence is natural.
         """
         now = time.monotonic()
-        if self.tick_sound and now >= max(self.voice_end + TICK_AFTER_S, self.next_tick):
+        if self.tick_sound and not self.ended and now >= max(self.voice_end + TICK_AFTER_S, self.next_tick):
             self.next_tick = now + TICK_EVERY_S
             return self.send(self.tick_sound, record)
         return None
@@ -668,10 +816,16 @@ class Interpreter:
             time.sleep(.01)
         # Ollama loads its model while PyTorch and the voice load; the first phrase is not slow.
         with ThreadPoolExecutor(max_workers=1) as pool:
-            warming = pool.submit(self.translate, 'Hallo.')
+            # Also checks that Ollama gives the token probabilities the sentence-end chance needs.
+            warming = pool.submit(lambda: (self.translate('Hallo.'), self.translate.ends('Hallo.')))
             self.voice = Voice(self.voice_path)
-            for _ in self.voice.stream('Hello.'):
-                pass
+            # Also the first measure of how long the voice takes to start and to say a sentence.
+            began = time.monotonic()
+            for i, _ in enumerate(self.voice.stream('Hello, this is how the voice sounds today.')):
+                if not i:
+                    self.first_audio.append(time.monotonic() - began)
+            self.voice.end()
+            self.voice.pace = self.pace
             warming.result()
         self.tick_sound = wait_sound(self.voice.sample_rate)
         self.players.append(self.player(os.environ.get('TALKEY_TRANSLATE_SINK', 'talkey_translate')))
@@ -781,7 +935,12 @@ def main():
         setting('TRANSLATE_MAX_S', '15', 1, 600)
         setting('TRANSLATE_QUICK_SILENCE_MS', '250', 64, 10000)
         setting('TRANSLATE_QUICK_AFTER_S', '4', 0, 600)
-        setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5)
+        speed = setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5)
+        if not setting('TRANSLATE_SPEED_MIN', '0.85', 0.5, 1.5) <= speed <= setting('TRANSLATE_SPEED_MAX', '1.15', 0.5, 1.5):
+            raise ValueError('TALKEY_TRANSLATE_SPEED must be between TALKEY_TRANSLATE_SPEED_MIN and _MAX')
+        setting('TRANSLATE_GUARD', '1', 0, 10)
+        setting('TRANSLATE_END_P', '0.2', 0.01, 1)
+        setting('TRANSLATE_WORD_P', '0.5', 0, 1)
         for name in ('STREAM', 'TICK', 'RECORD', 'TRACE'):
             if os.environ.get(f'TALKEY_TRANSLATE_{name}', '1') not in ('0', '1'):
                 raise ValueError(f'TALKEY_TRANSLATE_{name} must be 0 or 1')

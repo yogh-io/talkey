@@ -1,5 +1,6 @@
 """Shared local Whisper requests and explicit end-of-message cue matching."""
 import io
+import json
 import re
 import sys
 import urllib.request
@@ -17,9 +18,9 @@ def wav_bytes(pcm, sample_rate=16000, channels=1):
     return output.getvalue()
 
 
-def transcribe(pcm, url, language, prompt, sample_rate, channels):
+def inference(pcm, url, language, prompt, sample_rate, channels, response_format):
     boundary = uuid.uuid4().hex
-    fields = {"language": language, "temperature": "0", "response_format": "text"}
+    fields = {"language": language, "temperature": "0", "response_format": response_format}
     if prompt:
         fields["prompt"] = prompt
     parts = []
@@ -30,9 +31,37 @@ def transcribe(pcm, url, language, prompt, sample_rate, channels):
     request = urllib.request.Request(url, data=b"".join(parts), headers={
         "Content-Type": f"multipart/form-data; boundary={boundary}"})
     with urllib.request.urlopen(request, timeout=20) as response:
-        text = response.read().decode("utf-8")
+        return response.read().decode("utf-8")
+
+
+def clean(text):
     text = re.sub(r"\[[^\]]*\]|\*[^*]*\*", "", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def transcribe(pcm, url, language, prompt, sample_rate, channels):
+    return clean(inference(pcm, url, language, prompt, sample_rate, channels, "text"))
+
+
+def transcribe_words(pcm, url, language, prompt, sample_rate, channels):
+    """The transcript, its words with whisper's probability for each, and its chance of no speech.
+
+    A word is the tokens up to the next one that starts with a space; its probability is
+    that of its least likely token.
+    """
+    reply = json.loads(inference(pcm, url, language, prompt, sample_rate, channels, "verbose_json"))
+    words = []
+    for segment in reply["segments"]:
+        if "words" not in segment:
+            raise RuntimeError("the whisper server gave no word probabilities")
+        for token in segment["words"]:
+            if words and not token["word"].startswith(" "):
+                words[-1] = (words[-1][0] + token["word"], min(words[-1][1], token["probability"]))
+            else:
+                words.append((token["word"], token["probability"]))
+    words = [(clean(word), probability) for word, probability in words if clean(word)]
+    no_speech = max((segment.get("no_speech_prob", 0) for segment in reply["segments"]), default=1)
+    return clean(reply["text"]), words, no_speech
 
 
 def strip_end_cue(text, phrase):

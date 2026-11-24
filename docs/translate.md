@@ -46,20 +46,36 @@ flowchart LR
 2. **Transcribing while you talk.** Every quarter second, your whisper server
    transcribes everything you have said in the phrase so far. Your last two
    sentences go along as context, which helps whisper pick words that fit.
-3. **Translating while you talk.** Each time, TranslateGemma translates the whole
-   phrase so far, continuing the English that has already been spoken.
-4. **Only speaking what is settled.** English is spoken once a later translation,
-   made after you said more, still starts with it. Many languages, Dutch and
-   German among them, put the verb at the end of the sentence. Until you say it,
-   the model guesses one, and the guess changes when the real verb arrives. So a
-   guess is never spoken. The first piece of a phrase goes out as soon as two
-   words are settled; later pieces wait until the voice is about to run out, and
-   end where the model put a comma or a period.
-5. **One continuous voice.** Pocket TTS speaks each piece as a continuation of
+3. **Translating while you talk.** Each time, TranslateGemma translates the
+   phrase so far, continuing the English that has already been spoken. It only
+   gets the words whisper stands by: words that two transcriptions in a row have
+   in the same place, or three when whisper itself is unsure of the word. The last word
+   of a transcription is often still wrong, and a wrong word would make a wrong
+   translation. The translate window shows everything whisper heard.
+4. **Only speaking what is settled.** English is settled, word by word, when a
+   later translation, made after you said more, still starts with the same words.
+   Many languages, Dutch and German among them, put the verb at the end of the
+   sentence. Until you say it, the model guesses one, and the guess changes when
+   the real verb arrives. So a guess is not settled. There is one other way for
+   English to be settled:
+   after each draft, the same model is asked, as a plain language model, how
+   likely it is that a sentence ends right after the words heard so far. When
+   that chance is high enough, the whole draft may be spoken without waiting for
+   more words. An open clause, still waiting for its verb, gets a chance near
+   zero.
+5. **Timing from the voice itself.** Settled English is handed to the voice
+   when the voice is about to run out, so each piece carries all that is
+   settled by then. A piece is held back when it is so short that the voice
+   would fall silent in the middle of a sentence before the next piece is
+   usually ready; talkey measures that time during the session. The pace of the
+   voice follows the same measurements: a little slower when nothing more is
+   coming soon, faster when English is waiting behind it.
+6. **One continuous voice.** Pocket TTS speaks each piece as a continuation of
    the piece before it, so a sentence spoken in three pieces still sounds like
    one sentence. While it waits for the rest of a sentence, a soft tick tells
-   the listeners you have not stopped talking.
-6. **At your pause.** The whole phrase is transcribed once more, and whatever is
+   the listeners you have not stopped talking. After a piece that may end a
+   sentence, it stays silent.
+7. **At your pause.** The whole phrase is transcribed once more, and whatever is
    still untranslated is translated and spoken.
 
 The voice is **cloned, not trained**. Pocket TTS is a general English voice model.
@@ -81,7 +97,7 @@ tell it whether a step worked.
 |---|---|
 | talkey | working dictation, with its whisper server running |
 | Audio | PulseAudio, or PipeWire with `pipewire-pulse` (`pactl` and `pacat`, from `libpulse`) |
-| Ollama | running locally, with room for a 3.3 GB model |
+| Ollama | running locally, with room for a 3.3 GB model, recent enough to return token probabilities (`logprobs`) |
 | Python | 3.10 to 3.14, with `venv` and `pip`; and `git`, because pip installs the voice model from git |
 | GPU | the translator wants about 2.9 GB of VRAM next to your whisper model. An 8 GB card with whisper large-v3-turbo works. |
 | CPU | the voice runs on one CPU core, about 2.5 times faster than real time on a desktop CPU |
@@ -341,10 +357,14 @@ after changing them.
 | `TALKEY_TRANSLATE_URL` | `http://127.0.0.1:11434/api/chat` | Ollama's chat endpoint |
 | `TALKEY_TRANSLATE_TTS` | `english` | The Pocket TTS model |
 | `TALKEY_TRANSLATE_TEMP` | Pocket's `0.3` | Voice temperature; `0.45` sounded most like the speaker |
-| `TALKEY_TRANSLATE_SPEED` | `0.95` | Pace of the voice, without changing its pitch; below 1 is slower and gives the next piece more time to arrive. `1` keeps Pocket's own pace |
+| `TALKEY_TRANSLATE_SPEED` | `0.95` | The usual pace of the voice, without changing its pitch; below 1 is slower. `1` keeps Pocket's own pace |
+| `TALKEY_TRANSLATE_SPEED_MIN`, `TALKEY_TRANSLATE_SPEED_MAX` | `0.85`, `1.15` | The slowest pace, used when no more English is coming soon, and the fastest, used when English is waiting. Set both to the usual pace for a fixed pace |
+| `TALKEY_TRANSLATE_GUARD` | `1` | How much English the voice must have in hand before it starts a piece, as a share of the usual wait for the next piece. `0` speaks settled English at once, which starts earlier but leaves more pauses |
+| `TALKEY_TRANSLATE_END_P` | `0.2` | How sure the model must be that a sentence can end where you are, before that sentence is spoken without waiting for more words. `1` switches this off |
+| `TALKEY_TRANSLATE_WORD_P` | `0.5` | How sure whisper must be of a word for two agreeing transcriptions to be enough; below this, a third must agree. `0` always takes two |
 | `TALKEY_TRANSLATE_STREAM` | `1` | Speak settled English before you pause; `0` waits for the pause |
 | `TALKEY_TRANSLATE_PREVIEW_MS` | `250` | How often the phrase so far is transcribed and translated |
-| `TALKEY_TRANSLATE_TICK` | `1` | Tick softly while the voice waits for the rest of a sentence; `0` stays silent |
+| `TALKEY_TRANSLATE_TICK` | `1` | Tick softly while the voice waits for the rest of a sentence (not after one that may have ended); `0` stays silent |
 | `TALKEY_TRANSLATE_SILENCE_MS` | `500` | The pause that ends a phrase |
 | `TALKEY_TRANSLATE_QUICK_AFTER_S` | `4` | After this much speech in one phrase... |
 | `TALKEY_TRANSLATE_QUICK_SILENCE_MS` | `250` | ...this shorter pause ends it |
