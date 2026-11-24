@@ -346,15 +346,16 @@ takes room in the model's prompt and costs a little time per translation.
 
 ## What to expect
 
-- **Delay.** The English usually starts 2 to 3.5 seconds after you start a
-  sentence, often well before you finish it. A short sentence starts about half a
-  second after you pause. It cannot start much earlier without speaking guesses:
-  the first two words of a phrase are only heard reliably after about 1.3
-  seconds.
-- **Pauses in the English.** When the rest of a sentence is not settled yet, the
-  voice waits, with a soft tick so listeners know you are still talking. If you
-  talk without pausing for a long time, the English can fall a few seconds behind
-  and catch up at your next pause.
+- **Delay.** The English usually starts 3 to 4 seconds after you start a
+  sentence, often before you finish it. talkey waits until it has enough settled
+  English that the voice will not stop in the middle of a sentence. It cannot
+  start much earlier without speaking guesses or short fragments:
+  `TALKEY_TRANSLATE_GUARD=0` starts about a second earlier, with more and longer
+  pauses.
+- **Pauses in the English.** Most sentences flow without a break. When the rest
+  of a sentence is not settled yet, the voice waits, usually for less than a
+  second and a half, with a soft tick so listeners know you are still talking.
+  The English ends about four seconds after you stop talking.
 - **Mistakes.** Whisper sometimes mishears the first words of a phrase, and a 4B
   translation model gets some idioms and expressions wrong, for example Dutch
   times: "half elf" is 10:30, not 11:30. The translate window shows both what
