@@ -78,6 +78,10 @@ class AgreementTests(unittest.TestCase):
         self.assertIsNone(agreement.offer('Wij moeten volgende week de release nog even uitstellen ja'.split(),
                                           'We need to postpone the release for another week, yes', -9))
         self.assertEqual(agreement.decision['result'], 'dutch-changed')
+        # Against the latest draft, which only lacks new Dutch, not the older one whose English changed.
+        self.assertIsNone(agreement.offer('Wij moeten volgende week de release nog even uitstellen ja'.split(),
+                                          'We need to postpone the release for another week, yes', -9))
+        self.assertEqual(agreement.decision['result'], 'no-new-dutch')
 
     def test_a_draft_a_later_one_keeps_is_spoken_as_the_later_one_writes_it(self):
         agreement = worker.Agreement(.25)

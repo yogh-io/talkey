@@ -104,15 +104,16 @@ class Agreement:
         start = resume(self.said, words)
         heard, written = words_of(words[start:]), english.split()
         drafted = words_of(written)
-        held, misses = [], set()
+        # Why the latest earlier draft is not kept, if it is not.
+        held, unsettled = [], 'first-draft'
         for old_words, old_english in self.drafts:
             before, kept = words_of(old_words), words_of(old_english.split())
             if not (kept and len(before) < len(heard)):
-                misses.add('no-new-dutch')
+                unsettled = 'no-new-dutch'
             elif heard[:len(before)] != before:
-                misses.add('dutch-changed')
+                unsettled = 'dutch-changed'
             elif not (len(drafted) > len(kept) and drafted[:len(kept)] == kept):
-                misses.add('english-changed')
+                unsettled = 'english-changed'
             else:
                 held.append((len(kept), len(old_words)))
         self.drafts.append((words[start:], english))
@@ -127,8 +128,7 @@ class Agreement:
                 seen += 1 if bare(token) else 0
             pieces.append((count, dutch, piece))
         if not pieces:
-            return self.hold(next((reason for reason in ('english-changed', 'dutch-changed', 'no-new-dutch')
-                                   if reason in misses), 'first-draft'))
+            return self.hold(unsettled)
         if self.spoken and voice_left_s > -self.CLAUSE_WAIT_S:
             longest = max(pieces, key=lambda p: (p[0], p[1]))[2]
             pieces = [p for p in pieces if PIECE_END.search(p[2][-1])]
