@@ -74,6 +74,10 @@ class AgreementTests(unittest.TestCase):
         self.assertIsNone(agreement.offer('We moeten volgende week de release nog even uitstellen'.split(),
                                           'We need to postpone the release for another week', -9))
         self.assertEqual(agreement.spoken, '')
+        self.assertEqual(agreement.decision['result'], 'english-changed')
+        self.assertIsNone(agreement.offer('Wij moeten volgende week de release nog even uitstellen ja'.split(),
+                                          'We need to postpone the release for another week, yes', -9))
+        self.assertEqual(agreement.decision['result'], 'dutch-changed')
 
     def test_a_draft_a_later_one_keeps_is_spoken_as_the_later_one_writes_it(self):
         agreement = worker.Agreement(.25)
@@ -107,7 +111,9 @@ class AgreementTests(unittest.TestCase):
     def test_each_offer_says_why_it_spoke_or_held(self):
         agreement = worker.Agreement(.25)
         agreement.offer(['Hallo', 'allemaal'], 'Hello everyone', -9)
-        self.assertEqual(agreement.decision, {'result': 'unsettled', 'piece': None})
+        self.assertEqual(agreement.decision, {'result': 'first-draft', 'piece': None})
+        agreement.offer(['Hallo', 'allemaal'], 'Hello all', -9)
+        self.assertEqual(agreement.decision['result'], 'no-new-dutch')
         agreement.offer('Hallo allemaal ik deel'.split(), 'Hello everyone, I am sharing', -9)
         self.assertEqual(agreement.decision, {'result': 'spoken', 'piece': 'Hello everyone,', 'dutch': 'Hallo allemaal'})
         heard = 'Hallo allemaal ik deel even mijn scherm'.split()
