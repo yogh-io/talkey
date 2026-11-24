@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Show live translation in a window of its own, wider than the dictation HUD: the recent phrases of the session, what was heard and the English that was said, newest at the bottom. The dictation HUD is unchanged.
+- Highlight the English your listeners hear right now. talkey knows when each piece of English plays, so which piece is on air is exact; the words inside it follow an estimate. English that is translated but not played yet is shown apart.
+- Scroll back through the session with the mouse wheel over the translate window. The window never takes the keyboard focus.
+
 ## 0.2.0 - 2026-11-24
 
 - Add live translation in your own voice. Double-tap the memo key, or run `talkey translate toggle`, and talkey speaks what you say in English, in a voice cloned from 25 seconds of you, into a virtual microphone called “talkey English mic” for your call app. Everything runs locally: your whisper server, an Ollama translation model (`translategemma:4b` by default) and Pocket TTS on the CPU.

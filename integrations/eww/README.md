@@ -1,8 +1,8 @@
 # eww dictation HUD
 
 The live HUD for talkey, built on **eww** (a GTK widget system for X11/i3). It
-is display-only: it reads the same state files `bin/talkey` writes and never
-feeds back into the recorder.
+reads the same state files `bin/talkey` writes and never feeds back into the
+recorder. Live translation has a window of its own, which you can scroll back.
 
 `talkey` stays renderer-agnostic - it just writes the state files. This adapter
 watches `$STATE_DIR/session.changed` via inotify and reads the current take
@@ -18,10 +18,12 @@ keep typing into your real window).
 ## What's here
 
 ```
-eww.yuck     both windows: the dictation HUD, and the key cheat sheet
+eww.yuck     the windows: the dictation HUD, the translate window, the key cheat sheet
 eww.scss     styling (gradients, zone colours, fonts)
-eww-feed     streams the live state as JSON (peak dBFS -> level + coloured trace)
-talkey-hud   the renderer adapter: daemon + open/close the HUD per dictation
+eww-feed     streams the live state as JSON (peak dBFS -> level + coloured trace);
+             `eww-feed translate` feeds the translate window, and
+             `eww-feed scroll` is what its mouse wheel runs
+talkey-hud   the renderer adapter: daemon + open/close the windows
 ```
 
 The `bin/talkey-hud` launcher works from a checkout and from an installed package.
@@ -45,6 +47,11 @@ eww window shares the class `Eww`), and starts the adapter with `exec_always`
 
 So once eww is installed and i3 is reloaded, dictation just shows the HUD. No
 separate setup.
+
+The translate window (`talkeytranslate`) needs no rule: it is `wm-ignore`, so no
+window manager manages it, and it cannot take the focus even when you scroll it.
+It opens while translate mode hears, translates or speaks a phrase, in the same
+place as the HUD; a dictation replaces it until the dictation is done.
 
 ## Manual control (debugging)
 
@@ -70,6 +77,8 @@ TALKEY_SVG_W/_H      level-trace image size
 ```
 
 `talkey-hud` passes the first four to `eww open`, which overrides the geometry.
+The translate window takes the monitor, position and anchor too, but keeps its
+own size.
 
 Meter rendering lives in `lib/hud.sh`. It samples only while the recorder is alive,
 retains the final trace and duration, and reports when live preview reaches its cap.

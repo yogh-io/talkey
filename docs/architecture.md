@@ -175,6 +175,38 @@ generated with the previous piece's text and frames forced in front, and a
 piece that is not the last loses its end-of-speech tail, so a phrase stays one
 utterance. Any stage error stops the worker and reports `error`.
 
+The worker publishes what the HUD shows in `$STATE_DIR`, each file replaced with
+an atomic rename:
+
+| File | Contents |
+|---|---|
+| `translate.subtitles` | JSON `{"lines": [...]}`, the session's last 100 phrases, oldest first |
+| `translate.showing` | exists while a phrase is heard, translated or spoken, until its English has finished playing |
+| `translate.raw` | the last 0.13 s of microphone audio, refreshed about 8 times a second while `translate.showing` exists |
+| `translate.scroll` | written by the HUD, not the worker: the number of the phrase at the bottom of a view scrolled back |
+
+A line is `{"n", "dutch", "live", "english", "done", "pieces"}`: its number in the
+session, what was heard, whether it is still being heard, the English so far,
+whether more English can follow, and the pieces the English is spoken in. A
+piece is `{"text", "start", "end"}`. `start` is the Unix time, in seconds, at
+which its first sample is due to play, and `end` the time its last sample has
+played; `start` is null until the voice has made the first audio, `end` while it
+is still making it. Both come from the schedule `send` keeps for the player,
+converted from the monotonic clock when they are published, so a renderer can
+compare them with its own clock. Ticks between pieces are not pieces. The call
+hears the audio after the player's 60 ms buffer and its own delay.
+
+`talkey-hud` opens the `talkeytranslate` window while `translate.showing`
+exists, unless a dictation or an alert needs the HUD, and closes it a linger
+after. `eww-feed translate` draws a fixed number of rows as Pango markup, so the
+window never changes size: a piece is played, on air or queued by comparing its
+times with the clock, and the words spoken inside the piece on air are estimated
+from their share of its characters (for a piece still being made, from the
+session's seconds per character). It redraws ten times a second while a piece is
+on air or due, and otherwise waits for a state file to change. The window is
+`wm-ignore`, so the window manager never gives it focus, and its mouse wheel
+runs `eww-feed scroll` with the phrases the frame names for up and down.
+
 The null sink and its remap source are created on start when missing and are not
 removed on stop, so applications keep the microphone selected. Start refuses a
 capture source that is the translation microphone itself. Model weights are only

@@ -6,7 +6,8 @@ Talk in your own language, and the people in your call hear you in English, in
 your own voice, about two to three seconds behind you. talkey listens to your
 microphone, translates what you say, and speaks it into a virtual microphone
 called **talkey English mic**. You pick that microphone in your call app, just
-like a headset. The HUD shows what it heard and what it said, while you talk.
+like a headset. A window shows what it heard and what it said, and which English
+your listeners hear right now.
 
 [Watch the demo with sound](media/translate-demo.mp4) (22 seconds, Dutch in,
 English out; the demo uses a stock voice, not a cloned one).
@@ -35,8 +36,9 @@ flowchart LR
   llm --> tts[Pocket TTS on the CPU: your voice]
   tts --> sink[talkey English mic]
   sink --> call[Your call app]
-  whisper --> hud[HUD subtitles]
+  whisper --> hud[Translate window]
   llm --> hud
+  tts --> hud
 ```
 
 1. **Phrases.** Silero, the same speech detector auto mode uses, notices when
@@ -185,8 +187,8 @@ Double-tap the memo key, or run `talkey translate toggle`. After a few seconds y
 hear the auto-mode "on" sound. Say a sentence.
 
 Check: `talkey translate status` shows `{"enabled":true,"state":"listening",...}`,
-and `pactl list short sources` lists `talkey_translate_mic`. The HUD opens while
-you speak.
+and `pactl list short sources` lists `talkey_translate_mic`. The translate window
+opens while you speak.
 
 ## Getting your voice right
 
@@ -235,14 +237,41 @@ way there in a minute.
    translation, and it stays when you stop, silent, so your app keeps it selected.
 3. Use headphones, so the English you hear from others does not reach your
    microphone.
-4. Watch the HUD. It shows your words as they are heard and the English under
-   them. If something was misheard or comes out wrong, say it again.
+4. Watch the translate window. It shows your words as they are heard and the
+   English under them. If something was misheard or comes out wrong, say it
+   again.
 
-![the HUD while you speak](screenshots/translate-hearing.png)
+![the translate window while you speak](screenshots/translate-hearing.png)
+
+### The translate window
+
+The window opens when you start talking and closes a few seconds after the last
+English has played. It keeps the conversation, newest at the bottom:
+
+- **»** what was heard, in grey. Slanted grey words are still being heard and can
+  change.
+- **→** the English. What your listeners hear right now has a teal background.
+  Inside it, the words already spoken are white and the rest light teal.
+- Slanted grey English is translated but not played yet. A **…** means more
+  English is coming.
+- **▶ ON AIR** in the corner means English is playing.
+
+Which piece of English is playing is exact: talkey knows when it hands each piece
+to the microphone. Where the voice is inside a piece is an estimate, from the
+length of the words. Your call app adds its own small delay on top.
+
+Scroll with the mouse wheel over the window to read back through the session,
+up to the last 100 phrases. The corner then shows how many newer phrases are
+below; scroll down to the end to follow along again. The window never takes the
+keyboard focus, not even when you scroll it, so you keep typing in your call
+app.
+
+![the window with several phrases, the last one on air](screenshots/translate-done.png)
 
 Translate mode and auto mode both act on everything you say, so starting one
 stops the other. Push-to-talk dictation still works, but what you dictate is
-also translated.
+also translated. While you dictate, the dictation HUD takes the translate
+window's place.
 
 ## What to expect
 
@@ -257,12 +286,10 @@ also translated.
   and catch up at your next pause.
 - **Mistakes.** Whisper sometimes mishears the first words of a phrase, and a 4B
   translation model gets some idioms and expressions wrong, for example Dutch
-  times: "half elf" is 10:30, not 11:30. The subtitles show both what was heard
-  and what was said.
+  times: "half elf" is 10:30, not 11:30. The translate window shows both what
+  was heard and what was said.
 - **Your voice.** The listeners hear your voice, so they will take its mistakes as
   yours. Where it matters, tell people you are using live translation.
-
-![a phrase once you have paused](screenshots/translate-done.png)
 
 ## Settings
 
