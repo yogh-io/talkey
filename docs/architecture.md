@@ -176,6 +176,14 @@ generated with the previous piece's text and frames forced in front, and a
 piece that is not the last loses its end-of-speech tail, so a phrase stays one
 utterance. Any stage error stops the worker and reports `error`.
 
+With `TALKEY_TRANSLATE_TRACE=1` the worker appends every step of each phrase to
+`trace.jsonl` in the run directory: speech start and end, each preview and
+draft with its latency, each `Agreement` decision and its reason, pieces queued,
+the voice's first audio and the play schedule, and ticks. Times are seconds
+since the phrase's first word on the audio clock: capture frame k maps to the
+earliest monotonic time it could have arrived, so a busy main loop does not
+shift them.
+
 The worker publishes what the HUD shows in `$STATE_DIR`, each file replaced with
 an atomic rename:
 

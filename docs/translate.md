@@ -351,6 +351,7 @@ after changing them.
 | `TALKEY_TRANSLATE_MAX_S` | `15` | The longest phrase; it is cut here even without a pause |
 | `TALKEY_TRANSLATE_MONITOR` | `0` | `1` also plays the English on your own output; use headphones |
 | `TALKEY_TRANSLATE_RECORD` | `0` | `1` keeps each phrase's audio, see below |
+| `TALKEY_TRANSLATE_TRACE` | `0` | `1` logs the timing of each phrase, see below |
 | `TALKEY_TRANSLATE_SINK`, `TALKEY_TRANSLATE_MIC` | `talkey_translate`, `talkey_translate_mic` | The sink and microphone the English goes to. Other names run a second, private instance beside yours, for example to test |
 | `TALKEY_TRANSLATE_CAMERA` | `1` | Start the talkey camera with translation when it exists; `0` leaves it to `talkey camera start` |
 | `TALKEY_CAMERA_INPUT` | your first webcam | The webcam the talkey camera shows, like `/dev/video0` |
@@ -386,6 +387,14 @@ With `TALKEY_TRANSLATE_RECORD=1`, every phrase also keeps two files in
   pauses between pieces and the ticks in them. This is what your call heard.
 
 The session folder has its own `lines.log`, whose entries name the two files.
+
+With `TALKEY_TRANSLATE_TRACE=1`, the worker writes `trace.jsonl` next to
+`lines.log`: one JSON line per event, with the phrase number `n` and `t`, the
+seconds since you began that phrase. It shows when you started and stopped
+talking, each transcription of the phrase so far and each draft translation,
+with how long they took, why a draft was spoken or held back, when each piece
+was handed to the voice, when its first audio was made, and when it played.
+Use it to find where the time goes.
 
 To check that the English really reaches the microphone, record it directly while
 you speak:

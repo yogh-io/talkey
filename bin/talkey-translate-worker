@@ -90,6 +90,11 @@ class Agreement:
         self.said = []
         self.spoken = ''
         self.drafts = []
+        # What the last offer decided and the piece it was about, for the trace.
+        self.decision = None
+
+    def hold(self, reason, piece=None):
+        self.decision = {'result': reason, 'piece': ' '.join(piece) if piece else None}
 
     def offer(self, words, english, voice_left_s):
         """Record a draft for the Dutch words heard so far; return a piece to speak now, or None.
@@ -116,19 +121,23 @@ class Agreement:
                 piece.append(token)
                 seen += 1 if bare(token) else 0
             pieces.append((count, dutch, piece))
-        if self.spoken and voice_left_s > -self.CLAUSE_WAIT_S:
-            pieces = [p for p in pieces if PIECE_END.search(p[2][-1])]
         if not pieces:
-            return None
+            return self.hold('unsettled')
+        if self.spoken and voice_left_s > -self.CLAUSE_WAIT_S:
+            longest = max(pieces, key=lambda p: (p[0], p[1]))[2]
+            pieces = [p for p in pieces if PIECE_END.search(p[2][-1])]
+            if not pieces:
+                return self.hold('no-clause-end', longest)
         count, dutch, piece = max(pieces, key=lambda p: (p[0], p[1]))
         if count < (self.WORDS if self.spoken else self.FIRST_WORDS):
-            return None
+            return self.hold('too-few-words', piece)
         if self.spoken and voice_left_s > self.room_s:
-            return None
+            return self.hold('voice-busy', piece)
         text = re.sub(r'^[\s.,;:!?…]+', '', ' '.join(piece))
         self.said = words[:start + dutch]
         self.spoken = f'{self.spoken} {text}'.strip()
         self.drafts = []
+        self.hold('spoken', [text])
         return text
 
 
@@ -179,10 +188,50 @@ class Phrases(Endpoint):
         return event
 
 
+class Trace:
+    """With TALKEY_TRANSLATE_TRACE=1, each phrase's events as JSON lines, timed from its first word.
+
+    Times come from the audio clock: frame k of the capture is mapped to the earliest monotonic
+    time it could have arrived, so a busy main loop does not shift them.
+    """
+    def __init__(self, path):
+        self.file = path.open('a', buffering=1) if path else None
+        self.lock = threading.Lock()
+        self.origin = math.inf
+        self.frames = self.voiced = 0
+
+    def frame(self, speech):
+        if self.file:
+            self.frames += 1
+            self.origin = min(self.origin, time.monotonic() - self.frames * FRAME_MS / 1000)
+            if speech:
+                self.voiced = self.frames
+
+    def clock(self, frames):
+        """Monotonic time at which the capture reached this many frames."""
+        return self.origin + frames * FRAME_MS / 1000
+
+    # Fields holding a monotonic time, written like t: seconds since the phrase's first word.
+    TIMES = ('start', 'end', 'audio_from', 'heard_to', 'detected', 'endpoint')
+
+    def __call__(self, phrase, event, at=None, **fields):
+        if not self.file:
+            return
+        at = time.monotonic() if at is None else at
+        line = {'n': phrase.number, 'event': event, 't': round(at - phrase.onset, 3), 'at': round(at, 3)}
+        for key, value in fields.items():
+            line[key] = round(value - phrase.onset, 3) if key in Trace.TIMES and value is not None else value
+        with self.lock:
+            self.file.write(json.dumps(line, ensure_ascii=False) + '\n')
+
+
 class Phrase:
     """One stretch of speech, from its first word to the pause after it."""
     def __init__(self, started, number):
         self.started, self.ended, self.number = started, None, number
+        # When the first word began, by the audio clock; the VAD notices it a little later.
+        self.onset = started
+        self.audio_from = started
         self.audio = b''
         # As the HUD shows it; each piece of English gets the Unix times it starts and stops playing.
         self.shown = {'n': number, 'dutch': '', 'english': '', 'live': True, 'done': False, 'pieces': []}
@@ -350,6 +399,8 @@ class Interpreter:
             self.recordings = archive / 'translate' / time.strftime('%Y%m%d-%H%M%S')
             self.recordings.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.stream = os.environ.get('TALKEY_TRANSLATE_STREAM', '1') == '1'
+        tracing = os.environ.get('TALKEY_TRANSLATE_TRACE', '0') == '1'
+        self.trace = Trace(self.run_dir / 'trace.jsonl' if tracing else None)
         self.previews = ThreadPoolExecutor(max_workers=1)
         self.previewing = None
         self.recent = deque(maxlen=2)
@@ -397,6 +448,7 @@ class Interpreter:
         """Hand a piece of English to the voice."""
         piece = {'text': text, 'start': None, 'end': None}
         phrase.english.append(text)
+        self.trace(phrase, 'queue', text=text, last=last)
         with self.lock:
             phrase.shown['pieces'].append(piece)
             phrase.shown['english'] = ' '.join(phrase.english)
@@ -415,7 +467,10 @@ class Interpreter:
             with phrase.lock:
                 if phrase.closed:
                     return
+                sent = time.monotonic()
                 text = preview(pcm, self.url, self.language, prompt)
+                self.trace(phrase, 'preview', audio_s=round(len(pcm) / 32000, 3), text=text,
+                           heard_to=phrase.audio_from + len(pcm) / 32000, latency=round(time.monotonic() - sent, 3))
                 with self.lock:
                     phrase.shown['dutch'] = text
                     self.show()
@@ -428,8 +483,12 @@ class Interpreter:
         """Draft the English for the phrase so far and speak what the drafts agree on."""
         if phrase.agreement is None:
             phrase.agreement = Agreement(self.preview_s)
-        draft = self.translate(text, phrase.agreement.spoken)
-        piece = phrase.agreement.offer(text.split(), draft, self.voice_end - time.monotonic())
+        spoken, sent = phrase.agreement.spoken, time.monotonic()
+        draft = self.translate(text, spoken)
+        self.trace(phrase, 'draft', source=text, spoken=spoken, english=draft, latency=round(time.monotonic() - sent, 3))
+        voice_left = self.voice_end - time.monotonic()
+        piece = phrase.agreement.offer(text.split(), draft, voice_left)
+        self.trace(phrase, 'agree', voice_left=round(voice_left, 3), **phrase.agreement.decision)
         if piece:
             self.queue(phrase, piece, False)
 
@@ -460,10 +519,14 @@ class Interpreter:
     def recognize(self):
         while True:
             pcm, phrase = self.phrases.get()
+            sent = time.monotonic()
             # The last sentences steer whisper toward words that fit what was being said.
             text = transcribe(pcm, self.url, self.language, ' '.join(self.recent) or None, 16000, 1)
+            self.trace(phrase, 'final_asr', audio_s=round(len(pcm) / 32000, 3), text=text,
+                       latency=round(time.monotonic() - sent, 3))
             with phrase.lock:
                 phrase.closed = True
+                self.trace(phrase, 'closed')
                 if not re.search(r'\w', text) or HALLUCINATION.search(text):
                     with self.lock:
                         kept = [shown for shown in self.subtitles if shown is not phrase.shown]
@@ -478,7 +541,10 @@ class Interpreter:
                     self.show()
                 words, agreement = text.split(), phrase.agreement or Agreement(self.preview_s)
                 if re.search(r'\w', ' '.join(words[resume(agreement.said, words):])):
+                    sent = time.monotonic()
                     english = self.translate(text, agreement.spoken)
+                    self.trace(phrase, 'final_draft', source=text, spoken=agreement.spoken, english=english,
+                               latency=round(time.monotonic() - sent, 3))
                     if english:
                         self.queue(phrase, english, True)
                 with self.lock:
@@ -523,14 +589,15 @@ class Interpreter:
                 try:
                     item = phrase.segments.get(timeout=.05)
                 except queue.Empty:
-                    if pieces:
-                        self.tick(record)
+                    if pieces and (ticked := self.tick(record)) is not None:
+                        self.trace(phrase, 'tick', start=ticked)
                     continue
                 if item is None:
                     break
                 piece, last = item
                 pieces.append(piece['text'])
                 start = None
+                self.trace(phrase, 'tts_start', text=piece['text'])
                 for i, chunk in enumerate(self.voice.stream(piece['text'], last)):
                     now = time.monotonic()
                     if first is None:
@@ -539,15 +606,21 @@ class Interpreter:
                     quiet = now - self.voice_end
                     if first != now and quiet > 0:
                         (stalls if i else waits).append(quiet)
+                        if i:
+                            self.trace(phrase, 'stall', quiet=round(quiet, 3))
                     self.voice_end = max(self.voice_end, now) + len(chunk) / 2 / self.voice.sample_rate
                     begins = self.send(chunk, record)
                     if start is None:
                         start = begins
                         self.on_air(piece, start=start)
+                        self.trace(phrase, 'tts_first', text=piece['text'])
                 if start is None:
                     start = max(time.monotonic(), self.played_end)
                 self.on_air(piece, start=start, end=max(start, self.played_end))
+                self.trace(phrase, 'tts_end', text=piece['text'])
+                self.trace(phrase, 'play', text=piece['text'], start=start, end=max(start, self.played_end))
             self.voice.end()
+            self.trace(phrase, 'spoken', end=self.played_end if first is not None else None)
             if first is not None:
                 entry = (f'{phrase.shown["dutch"]}\n  -> {" ".join(phrase.english)}\n'
                          f'  spoken as: {" | ".join(pieces)}\n'
@@ -569,8 +642,9 @@ class Interpreter:
         """
         now = time.monotonic()
         if self.tick_sound and now >= max(self.voice_end + TICK_AFTER_S, self.next_tick):
-            self.send(self.tick_sound, record)
             self.next_tick = now + TICK_EVERY_S
+            return self.send(self.tick_sound, record)
+        return None
 
     def player(self, device):
         command = ['pacat', '--playback', '--raw', '--format=s16le', f'--rate={self.voice.sample_rate}',
@@ -621,7 +695,9 @@ class Interpreter:
                 tmp.write_bytes(b''.join(recent))
                 tmp.replace(level)
                 recent.clear()
-            event = self.endpoint.update(self.vad.speech(frame))
+            speech = self.vad.speech(frame)
+            self.trace.frame(speech)
+            event = self.endpoint.update(speech)
             if audio is None:
                 self.preroll.append(frame)
             else:
@@ -631,6 +707,11 @@ class Interpreter:
                 self.preroll.clear()
                 self.count += 1
                 phrase, previewed = Phrase(time.monotonic(), self.count), len(audio)
+                if self.trace.file:
+                    frames = self.trace.frames
+                    phrase.onset = self.trace.clock(frames - self.endpoint.start_frames)
+                    phrase.audio_from = self.trace.clock(frames - len(audio))
+                    self.trace(phrase, 'speech_start', detected=phrase.started, audio_from=phrase.audio_from)
                 with self.lock:
                     self.subtitles.append(phrase.shown)
                     self.show()
@@ -640,6 +721,7 @@ class Interpreter:
                 self.state('hearing')
             elif event == 'end':
                 phrase.ended = time.monotonic()
+                self.trace(phrase, 'speech_end', at=self.trace.clock(self.trace.voiced), endpoint=phrase.ended)
                 phrase.audio = b''.join(audio)
                 self.phrases.put((phrase.audio, phrase))
                 audio = None
@@ -693,7 +775,7 @@ def main():
         setting('TRANSLATE_QUICK_SILENCE_MS', '250', 64, 10000)
         setting('TRANSLATE_QUICK_AFTER_S', '4', 0, 600)
         setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5)
-        for name in ('STREAM', 'TICK', 'RECORD'):
+        for name in ('STREAM', 'TICK', 'RECORD', 'TRACE'):
             if os.environ.get(f'TALKEY_TRANSLATE_{name}', '1') not in ('0', '1'):
                 raise ValueError(f'TALKEY_TRANSLATE_{name} must be 0 or 1')
         if os.environ.get('TALKEY_TRANSLATE_TEMP'):

@@ -104,6 +104,20 @@ class AgreementTests(unittest.TestCase):
                          'I am sharing my screen and')
 
 
+    def test_each_offer_says_why_it_spoke_or_held(self):
+        agreement = worker.Agreement(.25)
+        agreement.offer(['Hallo', 'allemaal'], 'Hello everyone', -9)
+        self.assertEqual(agreement.decision, {'result': 'unsettled', 'piece': None})
+        agreement.offer('Hallo allemaal ik deel'.split(), 'Hello everyone, I am sharing', -9)
+        self.assertEqual(agreement.decision, {'result': 'spoken', 'piece': 'Hello everyone,'})
+        heard = 'Hallo allemaal ik deel even mijn scherm'.split()
+        agreement.offer(heard, 'I am sharing my screen', 2)
+        agreement.offer(heard + ['en'], 'I am sharing my screen and', 2)
+        self.assertEqual(agreement.decision, {'result': 'no-clause-end', 'piece': 'I am sharing my screen'})
+        agreement.offer(heard + ['en', 'dan'], 'I am sharing my screen, and then', 2)
+        self.assertEqual(agreement.decision, {'result': 'voice-busy', 'piece': 'I am sharing my screen,'})
+
+
 class ResumeTests(unittest.TestCase):
     def test_finds_the_end_of_what_was_said_despite_rewording(self):
         said = 'een twee drie vier,'.split()
@@ -432,6 +446,41 @@ class TranslateRuntimeTests(unittest.TestCase):
         self.say('Hallo.')
         self.wait_for(lambda: self.spoken() == b'EN:Hallo.')
         self.assertFalse((self.root/'archive'/'translate').exists())
+        self.assertFalse((self.state/'translate.current/trace.jsonl').exists())
+
+    def test_the_trace_times_each_step_of_a_phrase_from_its_first_word(self):
+        self.env.update(TALKEY_TRANSLATE_PREVIEW_MS='100', TALKEY_TRANSLATE_TRACE='1')
+        self.listen()
+        (self.root/'preview-lines').write_text('een twee\neen twee drie\n')
+        (self.root/'heard').write_text('een twee drie vier.\n')
+        self.mute.unlink()
+        self.wait_for(lambda: self.spoken() == b'EN:een twee')
+        self.mute.touch()
+        trace = self.state/'translate.current/trace.jsonl'
+        self.wait_for(lambda: trace.exists() and '"event": "spoken"' in trace.read_text())
+        events = [json.loads(line) for line in trace.read_text().splitlines()]
+        self.assertEqual({event['n'] for event in events}, {1})
+        names = [event['event'] for event in events]
+        self.assertEqual(names[0], 'speech_start')
+        self.assertEqual(names[-1], 'spoken')
+        for name in ('preview', 'draft', 'agree', 'speech_end', 'final_asr', 'closed', 'final_draft'):
+            self.assertIn(name, names)
+        start = events[0]
+        # The VAD needs 64 ms of speech before it starts a phrase; the phrase audio begins before that.
+        self.assertGreaterEqual(start['detected'], .06)
+        self.assertLess(start['audio_from'], 0)
+        agreed = [event for event in events if event['event'] == 'agree' and event['result'] == 'spoken']
+        self.assertEqual([event['piece'] for event in agreed], ['EN:een twee'])
+        queued = [(event['text'], event['last']) for event in events if event['event'] == 'queue']
+        self.assertEqual(queued, [('EN:een twee', False), ('drie vier.', True)])
+        played = [event for event in events if event['event'] == 'play']
+        self.assertEqual([event['text'] for event in played], ['EN:een twee', 'drie vier.'])
+        self.assertLess(names.index('tts_first'), names.index('play'))
+        for event in played:
+            self.assertLessEqual(0, event['start'])
+            self.assertLessEqual(event['start'], event['end'])
+        self.assertLess(0, next(event['t'] for event in events if event['event'] == 'speech_end'))
+        self.assertTrue(all(event['t'] >= -1 for event in events))
 
     def test_other_sink_names_keep_a_second_instance_private(self):
         self.env.update(TALKEY_TRANSLATE_SINK='test_out', TALKEY_TRANSLATE_MIC='test_out_mic')
