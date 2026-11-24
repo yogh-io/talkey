@@ -61,7 +61,41 @@ build_svg() {
     }' > "$out"
 }
 
+# rows TEXT EMPTY - the transcript as a fixed number of rows, newest at the bottom.
+rows() {
+  printf '%s' "$1" | fold -s -w "${TALKEY_EWW_COLS:-52}" | awk -v L="${TALKEY_EWW_LINES:-4}" -v E="$2" '
+    { a[NR] = $0 }
+    END {
+      if (NR == 0) { for (k = 0; k < L-1; k++) print " "; print E; exit }
+      start = (NR > L) ? NR-L+1 : 1;
+      for (k = 0; k < L-NR; k++) print " ";      # top padding when short (bottom-aligned)
+      for (i = start; i <= NR; i++) print a[i];
+    }'
+}
+
+# Live translation shows while it runs, unless a dictation is newer or still going.
+translating() {
+  local run; run="$(readlink -f "$STATE_DIR/translate.current" 2>/dev/null)"
+  [[ -n "$run" ]] && process_alive "$run/worker.pid" || return 1
+  process_alive "$STATE_DIR/dictate.pid" && return 1
+  [[ ! -e "$STATE_DIR/dictate.pending" && "$SUBS" -nt "$HD" ]]
+}
+
+emit_translate() {
+  local live text headertext
+  live="$(jq -r '.lines[-1].live // false' "$SUBS" 2>/dev/null)"
+  text="$(jq -r '.lines[] | "» " + (if .dutch == "" then "…" else .dutch end),
+                           "→ " + (if .english == "" then "…" else .english end)' "$SUBS" 2>/dev/null)"
+  headertext="${TALKEY_TRANSLATE_FROM:-nl} → en"; headertext="${headertext^^}"
+  [[ "$live" != true ]] || headertext+=" · HEARING"
+  jq -cn --arg ht "$headertext" --arg t "$(rows "$text" "speak…")" --arg ft "double-tap $L_MEMO to stop" \
+     '{header:"translating", headertext:$ht, transcript:$t, timetext:"", long:false,
+       footertext:$ft, footerkind:"plain", metricstext:"", pzone:"",
+       level:0, zone:"silence", meterpath:"blank.svg"}'
+}
+
 emit() {
+  if translating; then emit_translate; return; fi
   local pkdb=-99 lvl=0 zone=silence header transcript footer secs long
   local take; take="$(readlink -f "$STATE_DIR/dictate.current" 2>/dev/null)"
   if [[ "$take" != "$LAST_TAKE" ]]; then LVL_HIST=(); LAST_SZ=0; LAST_TAKE="$take"; fi
@@ -102,14 +136,7 @@ emit() {
   # there are fewer than LINES they are padded with blank rows above (a space keeps
   # the row height). eww's :wrap won't wrap and :limit-width truncates, so we insert
   # the line breaks ourselves.
-  transcript="$(cat "$TR" 2>/dev/null | fold -s -w "${TALKEY_EWW_COLS:-52}" | awk -v L="${TALKEY_EWW_LINES:-4}" '
-    { a[NR] = $0 }
-    END {
-      if (NR == 0) { for (k = 0; k < L-1; k++) print " "; print "speak…"; exit }
-      start = (NR > L) ? NR-L+1 : 1;
-      for (k = 0; k < L-NR; k++) print " ";      # top padding when short (bottom-aligned)
-      for (i = start; i <= NR; i++) print a[i];
-    }')"
+  transcript="$(rows "$(cat "$TR" 2>/dev/null)" "speak…")"
   footer="$(cat "$FT" 2>/dev/null)"; footer="${footer:-type}"
   local bytes="$sz" rate="${TALKEY_SAMPLE_RATE:-16000}" channels="${TALKEY_CHANNELS:-1}"
   if [[ -s "$take/bytes" ]]; then bytes="$(cat "$take/bytes")"; fi

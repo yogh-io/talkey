@@ -38,5 +38,12 @@ auto_tone() {
 auto_tone auto-on 660 990
 auto_tone auto-off 990 440
 
+# Live translation ticks this while a phrase waits for its next piece, so listeners
+# know the speaker has not stopped. Soft and short, at the 24 kHz of the voice it
+# plays between.
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "sine=frequency=880:duration=0.05" \
+  -af "afade=t=in:d=0.003,afade=t=out:st=0.004:d=0.046:curve=exp,volume=0.8" \
+  -ac 1 -ar 24000 "$OUT/translate-tick.wav"
+
 echo "generated: $OUT"
 ls -1 "$OUT"

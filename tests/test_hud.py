@@ -32,6 +32,65 @@ class HudLifecycleTests(unittest.TestCase):
             pass
         return False
 
+    def identity(self, pid):
+        return Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()[19]
+
+    def test_translation_keeps_the_hud_open_and_feeds_subtitles(self):
+        with tempfile.TemporaryDirectory(prefix='talkey-hud-test-') as tmp:
+            root = Path(tmp)
+            state = root/'state'; state.mkdir()
+            run = state/'translate.abc'; run.mkdir()
+            (state/'translate.current').symlink_to(run, target_is_directory=True)
+            (run/'worker.pid').write_text(f'{os.getpid()}\n')
+            (run/'worker.pid.start').write_text(self.identity(os.getpid()) + '\n')
+            (state/'translate.subtitles').write_text(json.dumps({'lines': [
+                {'dutch': 'Ik bel je morgen op.', 'english': 'I will call you tomorrow.', 'live': False},
+                {'dutch': 'Tot', 'english': '', 'live': True}]}))
+            env = dict(os.environ, TALKEY_STATE_DIR=str(state), TALKEY_CONFIG=str(root/'config'),
+                       TALKEY_DATA_DIR=str(ROOT), TALKEY_LABEL_MEMO='Square')
+            feed = subprocess.Popen([str(ROOT/'integrations/eww/eww-feed')], env=env,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            try:
+                frame = json.loads(feed.stdout.readline())
+            finally:
+                feed.kill(); feed.wait(); feed.stdout.close()
+            self.assertEqual(frame['header'], 'translating')
+            self.assertEqual(frame['headertext'], 'NL → EN · HEARING')
+            self.assertEqual(frame['transcript'].splitlines(),
+                             ['» Ik bel je morgen op.', '→ I will call you tomorrow.', '» Tot', '→ …'])
+            self.assertEqual(frame['footertext'], 'double-tap Square to stop')
+
+            calls = root/'calls'
+            fake = root/'eww'
+            fake.write_text('''#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ['EWW_CALLS'], 'a') as output:
+    output.write(json.dumps(sys.argv[1:]) + '\\n')
+''')
+            fake.chmod(0o755)
+            env.update(TALKEY_EWW=str(fake), EWW_CALLS=str(calls), TALKEY_EWW_LINGER='.1')
+
+            def count(action):
+                if not calls.exists():
+                    return 0
+                return sum(args[2:4] == [action, 'talkeyhud']
+                           for args in map(json.loads, calls.read_text().splitlines()))
+
+            with (root/'stderr').open('w') as stderr:
+                process = subprocess.Popen([str(ROOT/'bin/talkey-hud')], env=env,
+                                           stdout=subprocess.DEVNULL, stderr=stderr)
+                try:
+                    self.wait_for(lambda: self.watching(process), 'HUD watcher never started')
+                    (state/'translate.showing').touch()
+                    self.wait_for(lambda: count('open') >= 1, 'hearing did not open the HUD')
+                    (state/'session.changed').write_text('changed\n')
+                    time.sleep(.3)
+                    self.assertEqual(count('close'), 0, 'a state change closed a showing HUD')
+                    (state/'translate.showing').unlink()
+                    self.wait_for(lambda: count('close') >= 1, 'the HUD stayed after translation went quiet')
+                finally:
+                    process.terminate(); process.wait()
+
     def test_take_events_open_keep_and_close_hud(self):
         with tempfile.TemporaryDirectory(prefix='talkey-hud-test-') as tmp:
             root = Path(tmp)

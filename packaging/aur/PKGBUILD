@@ -36,11 +36,11 @@ depends=(
 )
 optdepends=(
   'whisper.cpp-model-large-v3-turbo: the default speech model (AUR) - talkey needs some model'
-  'python: automatic speech detection, voice commands and live text in the HUD'
+  'python: automatic speech detection, voice commands, live text in the HUD and translate mode'
   'python-numpy: optional Smart Turn feature extraction'
   'python-onnxruntime: optional Smart Turn CPU inference'
   'libnotify: desktop notifications alongside the HUD, and the only feedback if you disable it'
-  'ollama: names archived recordings after what you said - needs a model pulled too (default qwen2.5:3b)'
+  'ollama: translate mode (translategemma:4b) and naming archived recordings (qwen2.5:3b)'
   'xclip: paste mode (TALKEY_PASTE=1) instead of typing'
   'sxhkd: key bindings without i3'
   'xbindkeys: key bindings without i3'
@@ -79,6 +79,7 @@ package() {
     bin/talkey-replay \
     bin/talkey-live-pump \
     bin/talkey-auto-worker \
+    bin/talkey-translate-worker \
     bin/talkey-norepeat \
     bin/talkey-whisper-server \
     bin/talkey-hud
@@ -87,7 +88,7 @@ package() {
   # so the scripts resolve it with one probe and behave identically either way.
   install -Dm644 -t "$pkgdir/usr/share/$_name" vocabulary.txt
   install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/*.sh
-  install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/smart_turn.py lib/speech.py lib/commands.py
+  install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/smart_turn.py lib/speech.py lib/commands.py lib/vad.py
   install -Dm644 -t "$pkgdir/usr/share/$_name/lib/vendor" \
     lib/vendor/*.py lib/vendor/LICENSE.* lib/vendor/README.md
   install -Dm644 -t "$pkgdir/usr/share/$_name/lib/setup" lib/setup/*.sh
@@ -95,7 +96,8 @@ package() {
   install -Dm644 -t "$pkgdir/usr/share/$_name/bindings" \
     bindings/i3.conf bindings/sxhkdrc bindings/xbindkeysrc bindings/README.md
   install -Dm644 -t "$pkgdir/usr/share/$_name/config" config/talkey.env.example
-  install -Dm644 -t "$pkgdir/usr/share/$_name/config" config/smart-turn-requirements.txt
+  install -Dm644 -t "$pkgdir/usr/share/$_name/config" config/smart-turn-requirements.txt \
+    config/translate-requirements.txt
   install -Dm644 -t "$pkgdir/usr/share/$_name/config/commands.d" config/commands.d/*.json
   install -Dm644 -t "$pkgdir/usr/share/$_name/integrations/eww" \
     integrations/eww/eww.yuck integrations/eww/eww.scss integrations/eww/blank.svg \

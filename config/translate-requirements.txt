@@ -1,0 +1,7 @@
+# CPU-only environment for translate mode's cloned voice. Tested together.
+# Use the CPU PyTorch index, or pip pulls the multi-gigabyte CUDA build:
+#   pip install -r translate-requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+# Pinned to a commit after the 4.0.1 release: it can continue an utterance from the frames of the
+# previous piece, which keeps a translation spoken in pieces from sounding like separate sentences.
+pocket-tts @ git+https://github.com/kyutai-labs/pocket-tts@bc4d640c925a3782092a841e9bc7ba442a65a838
+torch==2.15.0

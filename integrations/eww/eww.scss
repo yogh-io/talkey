@@ -51,6 +51,7 @@ $sans: "Cantarell", "Noto Sans", "DejaVu Sans", sans-serif;
 .state-speaking     { color: $live; } .hud-dot.state-speaking     { color: $live; }
 .state-paused       { color: #e2953a; } .hud-dot.state-paused       { color: #e2953a; }
 .state-transcribing { color: $work; } .hud-dot.state-transcribing { color: $work; }
+.state-translating  { color: $live; } .hud-dot.state-translating  { color: $live; }
 .state-done         { color: $good; } .hud-dot.state-done         { color: $good; }
 .state-cancelled    { color: $loud; } .hud-dot.state-cancelled    { color: $loud; }
 .state-nospeech     { color: $silence; } .hud-dot.state-nospeech   { color: $silence; }

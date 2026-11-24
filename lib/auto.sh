@@ -56,6 +56,7 @@ auto_start() {
     return 1
   fi
   preflight_ok || return 1
+  if translate_active; then translate_stop; fi
   if recording_active; then
     record_stop quiet || return 1
     if keep_cancelled "$RAW" dictate "$(cat "$TRANSCRIPT" 2>/dev/null || true)"; then rm -f "$RAW"; fi

@@ -100,8 +100,10 @@ close_hud() { ew_optional close talkeyhud; }
 # gone - on a CPU-only machine that transcription takes tens of seconds, far
 # longer than LINGER. So the HUD closes on talkey's pending marker, not on the
 # recorder pidfile: whichever of the two goes away last starts the linger.
+# A dictation, or live translation hearing, translating or speaking a phrase.
+showing() { [[ -f "$PIDFILE" || -f "$PENDING" || -f "$STATE_DIR/translate.showing" ]]; }
 schedule_close() {
-  ( sleep "$LINGER"; [[ -f "$PIDFILE" || -f "$PENDING" ]] || close_hud ) &
+  ( sleep "$LINGER"; showing || close_hud ) &
 }
 
 # The cheat sheet. The labels name the keys printed on YOUR keyboard - talkey
@@ -149,7 +151,7 @@ fi
 # it can't resolve eww-feed). Kill is a no-op if none is running.
 ew_optional kill; sleep 0.3; ew daemon || echo "talkey-hud: eww daemon failed to start - see $HUD_LOG" >&2
 sleep 0.4
-[[ -f "$PIDFILE" || -f "$PENDING" ]] && open_hud
+showing && open_hud
 [[ -f "$HELP_ON" ]] && open_help
 
 # Monitor the state dir. The recorder pidfile appearing -> show now. The pidfile
@@ -169,7 +171,9 @@ trap 'exit 143' TERM
 while read -r _ev fname <&8; do
   case "$fname" in
     session.changed|dictate.pid)
-      if [[ -f "$PIDFILE" || -f "$PENDING" ]]; then open_hud; else schedule_close; fi ;;
+      if showing; then open_hud; else schedule_close; fi ;;
+    translate.showing)
+      if showing; then open_hud; else schedule_close; fi ;;
     dictate.pending)
       # Only the marker going away matters here - it appears while the recorder
       # pidfile is still there, and that is what opened the HUD.
@@ -182,7 +186,7 @@ while read -r _ev fname <&8; do
       if [[ -f "$ALERT" ]]; then
         open_hud
         ( sleep "$ERR_LINGER"; rm -f "$ALERT"
-          [[ -f "$PIDFILE" || -f "$PENDING" ]] || close_hud ) &
+          showing || close_hud ) &
       fi ;;
     help.on)
       if [[ -f "$HELP_ON" ]]; then open_help; else close_help; fi ;;

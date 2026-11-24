@@ -21,6 +21,8 @@ runs a background Python capture/VAD worker.
 | `lib/setup/` | Interactive setup, split into UI, dependencies, config, models, service and bindings |
 | `bin/talkey-live-pump` | Interruptible HTTP inference, two-pass agreement, atomic preview publication |
 | `bin/talkey-auto-worker`, `lib/auto.sh` | Continuous capture, Silero VAD, endpoint detection, ordered delivery and external status |
+| `bin/talkey-translate-worker`, `lib/translate.sh` | Live translation: capture, recognition, Ollama translation, Pocket TTS and the virtual microphone |
+| `lib/vad.py` | Silero VAD through whisper.cpp and audio-time endpoints, shared by both workers |
 | `lib/smart_turn.py`, `lib/vendor/` | Optional CPU ONNX completion inference and pinned Whisper feature extraction |
 | `lib/hud.sh`, `integrations/eww/` | Presentation, meter rendering and window lifecycle |
 | `lib/install.sh`, `setup/`, `packaging/aur/` | Unit rendering, checkout setup, build and packaging |
@@ -155,6 +157,28 @@ Completed metadata and recovery files remain until the runtime directory is clea
 (normally at logout). The `/tmp` fallback and custom directories depend on the
 machine's cleanup policy. No task automatically deletes a directory containing
 unrecovered takes.
+
+## Translate mode
+
+`translate.current` selects the run directory, fenced the same way as auto mode.
+The worker owns no takes and types nothing. Its main thread captures audio and
+runs VAD. While a phrase is heard, a preview worker transcribes it every 250 ms
+and translates all of it, continuing the English already spoken; `Agreement`
+decides which earlier draft is safe to speak (a later preview heard more Dutch
+after the same words, and the later draft still starts with that English). At
+the pause a recognition thread transcribes the whole phrase and translates the
+rest. Both hold the phrase's lock, so the final step waits for a running
+preview. A speech thread takes phrases in the order they began and streams
+their pieces through Pocket TTS into `pacat`; a piece after the first is
+generated with the previous piece's text and frames forced in front, and a
+piece that is not the last loses its end-of-speech tail, so a phrase stays one
+utterance. Any stage error stops the worker and reports `error`.
+
+The null sink and its remap source are created on start when missing and are not
+removed on stop, so applications keep the microphone selected. Start refuses a
+capture source that is the translation microphone itself. Model weights are only
+downloaded by `talkey-setup translate`; the worker sets `HF_HUB_OFFLINE=1`
+before importing Pocket TTS.
 
 ## Configuration and installation
 

@@ -1,0 +1,685 @@
+#!/usr/bin/env python3
+"""Live translation into a virtual microphone, spoken in your cloned voice.
+
+Capture, Silero VAD and endpoints match auto mode. While a phrase is spoken, it is
+transcribed and translated again every quarter second; English that later drafts keep
+is spoken before the phrase ends, and the rest when it does. Phrases are spoken in
+order, each as one continuous utterance.
+"""
+import argparse
+from collections import deque
+import difflib
+from concurrent.futures import ThreadPoolExecutor
+import importlib.util
+import json
+import math
+import os
+from pathlib import Path
+import queue
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+import wave
+
+for data in (Path(os.environ.get('TALKEY_DATA_DIR', '/nonexistent')),
+             Path(__file__).resolve().parent.parent, Path('/usr/share/talkey')):
+    if (data / 'lib/speech.py').is_file():
+        sys.path.insert(0, str(data / 'lib'))
+        DATA_DIR = data
+        break
+from speech import transcribe
+from vad import FRAME_BYTES, FRAME_MS, Endpoint, Silero, setting
+
+LANGUAGES = {'nl': 'Dutch', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'it': 'Italian', 'pt': 'Portuguese'}
+# Punctuation the translation model itself wrote; a later piece ends at one, so it ends a clause.
+PIECE_END = re.compile(r'[,.;:?!…]["”’)]*$')
+# While a phrase waits for its next piece, a tick after this much quiet, then every so often.
+TICK_AFTER_S = 0.3
+TICK_EVERY_S = 0.5
+# Whisper's stock captions for near-silent Dutch and English clips.
+HALLUCINATION = re.compile(r'amara\.org|ondertitel|bedankt voor het kijken|thanks for watching', re.I)
+
+
+def bare(word):
+    return re.sub(r'\W', '', word.lower())
+
+
+def resume(said, words):
+    """Index in words just past the Dutch already translated; whisper may word it slightly differently."""
+    if not said:
+        return 0
+    matcher = difflib.SequenceMatcher(None, [bare(w) for w in said], [bare(w) for w in words], autojunk=False)
+    blocks = [block for block in matcher.get_matching_blocks() if block.size]
+    if not blocks:
+        return min(len(said), len(words))
+    a, b, size = blocks[-1]
+    return min(len(words), b + size + len(said) - (a + size))
+
+
+def words_of(tokens):
+    return [b for b in (bare(t) for t in tokens) if b]
+
+
+def unfinished(english):
+    """English that is still going on: a sentence end there makes the model stop continuing."""
+    return re.sub(r'[\s.!?…]+$', '', english).strip()
+
+
+class Agreement:
+    """Which English of a phrase is safe to speak before the phrase ends.
+
+    Each draft continues the English already spoken, for all the Dutch heard so far. An earlier
+    draft is safe once a later preview heard more Dutch after the same words, and the later draft
+    still starts with the earlier English and adds more. A guessed verb changes when the real one
+    is heard, so it is never spoken. Speaking a draft whose end then changed is what dropped words.
+    """
+    FIRST_WORDS = 2
+    WORDS = 3
+    # Once the voice has been quiet this long, a later piece need not end at a clause.
+    CLAUSE_WAIT_S = 1.0
+
+    def __init__(self, step_s):
+        # A later piece waits until the voice is about to run out, so pieces stay large.
+        self.room_s = step_s + 0.5
+        self.said = []
+        self.spoken = ''
+        self.drafts = []
+
+    def offer(self, words, english, voice_left_s):
+        """Record a draft for the Dutch words heard so far; return a piece to speak now, or None.
+
+        voice_left_s: seconds of English still to play; negative is how long the voice has been quiet.
+        """
+        start = resume(self.said, words)
+        heard, written = words_of(words[start:]), english.split()
+        drafted = words_of(written)
+        held = []
+        for old_words, old_english in self.drafts:
+            before, kept = words_of(old_words), words_of(old_english.split())
+            if (kept and len(before) < len(heard) and heard[:len(before)] == before
+                    and len(drafted) > len(kept) and drafted[:len(kept)] == kept):
+                held.append((len(kept), len(old_words)))
+        self.drafts.append((words[start:], english))
+        pieces = []
+        for count, dutch in held:
+            # Those English words as the newer draft writes them, so its comma stays.
+            piece, seen = [], 0
+            for token in written:
+                if seen == count:
+                    break
+                piece.append(token)
+                seen += 1 if bare(token) else 0
+            pieces.append((count, dutch, piece))
+        if self.spoken and voice_left_s > -self.CLAUSE_WAIT_S:
+            pieces = [p for p in pieces if PIECE_END.search(p[2][-1])]
+        if not pieces:
+            return None
+        count, dutch, piece = max(pieces, key=lambda p: (p[0], p[1]))
+        if count < (self.WORDS if self.spoken else self.FIRST_WORDS):
+            return None
+        if self.spoken and voice_left_s > self.room_s:
+            return None
+        text = re.sub(r'^[\s.,;:!?…]+', '', ' '.join(piece))
+        self.said = words[:start + dutch]
+        self.spoken = f'{self.spoken} {text}'.strip()
+        self.drafts = []
+        return text
+
+
+def preview(pcm, url, language, prompt):
+    """Transcript of the phrase so far, for the subtitles."""
+    return transcribe(pcm, url, language, prompt, 16000, 1)
+
+
+def wait_sound(rate):
+    """The tick that tells listeners a phrase is still coming, as PCM; None when switched off."""
+    if os.environ.get('TALKEY_TRANSLATE_TICK', '1') != '1':
+        return None
+    path = Path(os.environ.get('TALKEY_SOUND_DIR', DATA_DIR / 'sounds')) / 'translate-tick.wav'
+    with wave.open(str(path)) as sound:
+        if (sound.getnchannels(), sound.getsampwidth(), sound.getframerate()) != (1, 2, rate):
+            raise ValueError(f'{path} must be 16-bit mono at {rate} Hz, the rate of the voice')
+        pcm = sound.readframes(sound.getnframes())
+    # Without silence after it, the player would wait for more audio before playing the tick.
+    return pcm + bytes(2 * int(rate * 0.1))
+
+
+def default_voice():
+    data = Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local/share'))
+    return os.environ.get('TALKEY_TRANSLATE_VOICE', str(data / 'talkey/translate/voice.safetensors'))
+
+
+class StopRequested(Exception):
+    pass
+
+
+def stop_requested(*_):
+    raise StopRequested()
+
+
+class Phrases(Endpoint):
+    """Long phrases end on a shorter pause, so a monologue still flows out."""
+    def __init__(self, start_ms, silence_ms, max_ms, quick_ms, quick_after_ms):
+        super().__init__(start_ms, silence_ms, max_ms)
+        self.quick_frames = math.ceil(quick_ms / FRAME_MS)
+        self.quick_after = math.ceil(quick_after_ms / FRAME_MS)
+
+    def update(self, speech):
+        event = super().update(speech)
+        if (event is None and self.active and self.length - self.quiet >= self.quick_after
+                and self.quiet >= self.quick_frames):
+            self.reset()
+            return 'end'
+        return event
+
+
+class Phrase:
+    """One stretch of speech, from its first word to the pause after it."""
+    def __init__(self, started, number):
+        self.started, self.ended, self.number = started, None, number
+        self.audio = b''
+        self.shown = {'dutch': '', 'english': '', 'live': True}
+        # Held while a preview or the final translation works on this phrase.
+        self.lock = threading.Lock()
+        self.closed = False
+        self.agreement = None
+        self.english = []
+        # (English, last piece of the phrase) to speak, then None.
+        self.segments = queue.Queue()
+
+
+class Translator:
+    """Ollama chat in TranslateGemma's own prompt format; recent phrases are context."""
+    def __init__(self):
+        self.url = os.environ.get('TALKEY_TRANSLATE_URL', 'http://127.0.0.1:11434/api/chat')
+        self.model = os.environ.get('TALKEY_TRANSLATE_LLM', 'translategemma:4b')
+        self.options = {'temperature': 0, 'num_ctx': 2048}
+        layers = os.environ.get('TALKEY_TRANSLATE_GPU_LAYERS')
+        if layers:
+            self.options['num_gpu'] = int(layers)
+        code = os.environ.get('TALKEY_TRANSLATE_FROM', 'nl')
+        name = LANGUAGES.get(code, 'source')
+        # A free-form interpreter prompt read idioms like "dat valt wel mee" the wrong way round.
+        self.prompt = (f'You are a professional {name} ({code}) to English (en) translator. Your goal is to '
+                       f'accurately convey the meaning and nuances of the original {name} text while adhering '
+                       'to English grammar, vocabulary, and cultural sensitivities. Produce only the English '
+                       'translation, without any additional explanations or commentary. Please translate the '
+                       f'following {name} text into English:\n\n\n')
+        self.history = deque(maxlen=3)
+
+    def __call__(self, text, spoken=''):
+        """English for text; with spoken, only what follows the English already spoken."""
+        messages = []
+        for source, english in self.history:
+            messages += [{'role': 'user', 'content': self.prompt + source}, {'role': 'assistant', 'content': english}]
+        messages.append({'role': 'user', 'content': self.prompt + text})
+        spoken = unfinished(spoken)
+        if spoken:
+            messages.append({'role': 'assistant', 'content': spoken})
+        body = json.dumps({'model': self.model, 'messages': messages, 'stream': False, 'think': False,
+                           'keep_alive': '30m', 'options': self.options}).encode()
+        request = urllib.request.Request(self.url, data=body, headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            reply = json.load(response)['message']['content']
+        return re.sub(r'^[\s.,;:!?…]+', '', re.sub(r'\s+', ' ', reply).strip().strip('"“”'))
+
+    def remember(self, text, english):
+        """A finished phrase becomes context for the next ones."""
+        if english:
+            self.history.append((text, english))
+
+
+class Voice:
+    """Pocket TTS on CPU, streamed as 16-bit mono PCM; a phrase spoken in pieces stays one utterance.
+
+    A piece after the first is generated with the previous piece's text and its generated frames
+    forced in front, so it carries on instead of starting a new sentence. A piece that is not
+    the last loses its end-of-speech tail, which would otherwise sound like a sentence ending.
+    """
+    TAIL_FRAMES = 3
+    # Leading silence below this level is skipped, keeping a little before the voice begins.
+    QUIET = 0.01
+    ONSET_S = 0.04
+
+    def __init__(self, path):
+        import inspect
+        import torch
+        from pocket_tts import TTSModel
+        from pocket_tts.models.text_chunking import prepare_text_prompt, split_into_best_sentences
+        self.torch, self.prepare, self.split = torch, prepare_text_prompt, split_into_best_sentences
+        if 'forced_latents' not in inspect.signature(TTSModel._generate_audio_stream_short_text).parameters:
+            raise ValueError('this Pocket TTS cannot continue an utterance; run: talkey-setup translate')
+        # Unset keeps Pocket TTS's own default. Higher can sound more like the voice sample.
+        temp = os.environ.get('TALKEY_TRANSLATE_TEMP')
+        options = {'temp': float(temp)} if temp else {}
+        self.model = TTSModel.load_model(language=os.environ.get('TALKEY_TRANSLATE_TTS', 'english'), **options)
+        self.state = self.model.get_state_for_audio_prompt(path)
+        self.sample_rate = self.model.sample_rate
+        self.frame_samples = round(self.sample_rate / self.model.mimi.frame_rate)
+        self.previous = None
+
+    def stream(self, text, last=True):
+        """PCM for one piece of the current phrase; last ends the utterance."""
+        m = self.model
+        chunks = self.split(m.flow_lm.conditioner.tokenizer, text, 25, m.pad_with_spaces_for_short_inputs,
+                            remove_semicolons=m.remove_semicolons, append_terminal_punctuation=False,
+                            capitalize_first_letter=False, replace_characters=m.replace_characters)
+        for i, chunk in enumerate(chunks):
+            yield from self.piece(chunk, last and i == len(chunks) - 1)
+
+    def piece(self, text, last):
+        m, tail = self.model, self.TAIL_FRAMES * self.frame_samples * 2
+        context, forced = text, None
+        if self.previous:
+            context, forced = f'{self.previous[0]} {text}', self.previous[1]
+        options = (m.pad_with_spaces_for_short_inputs, m.remove_semicolons, last,
+                   m.capitalize_first_letter, m.replace_characters)
+        prompt, _ = self.prepare(context, *options)
+        _, after = self.prepare(text, *options)
+        latents, held, onset = [], b'', forced is None
+        for chunk in m._generate_audio_stream_short_text(self.state, prompt, after + 2, True,
+                                                         threading.Event(), latents_out=latents,
+                                                         forced_latents=forced):
+            if onset:
+                loud = (chunk.abs() > self.QUIET).nonzero()
+                if not len(loud):
+                    continue
+                chunk, onset = chunk[max(0, int(loud[0]) - int(self.ONSET_S * self.sample_rate)):], False
+            held += (chunk.clamp(-1, 1) * 32767).to(self.torch.int16).numpy().tobytes()
+            # The tail is only known to be unwanted once the piece turns out not to be the last.
+            ready = len(held) if last else len(held) - tail
+            if ready > 0:
+                yield held[:ready]
+                held = held[ready:]
+        frames = self.torch.cat(latents, 1) if latents else None
+        if last or frames is None or frames.shape[1] <= self.TAIL_FRAMES + 4:
+            self.previous = None
+        else:
+            self.previous = (text, frames[:, :-self.TAIL_FRAMES])
+
+    def end(self):
+        """The phrase is over; the next piece starts a new utterance."""
+        self.previous = None
+
+
+class Interpreter:
+    def __init__(self, vad, voice_path, translator):
+        self.vad, self.voice_path, self.translate = vad, voice_path, translator
+        self.voice = None
+        self.run_dir = Path(os.environ['TALKEY_TRANSLATE_RUN'])
+        self.state_dir = Path(os.environ['TALKEY_STATE_DIR'])
+        self.command = str(Path(__file__).resolve().with_name('talkey'))
+        self.url = os.environ.get('TALKEY_WHISPER_URL', 'http://127.0.0.1:8910/inference')
+        self.language = os.environ.get('TALKEY_TRANSLATE_FROM', 'nl')
+        start = setting('VAD_START_MS', '160', 32, 2000)
+        silence = setting('TRANSLATE_SILENCE_MS', '500', 160, 10000)
+        cap = setting('TRANSLATE_MAX_S', '15', 1, 600)
+        quick = setting('TRANSLATE_QUICK_SILENCE_MS', '250', 64, 10000)
+        quick_after = setting('TRANSLATE_QUICK_AFTER_S', '4', 0, 600)
+        self.endpoint = Phrases(start, silence, cap * 1000, quick, quick_after * 1000)
+        self.preroll = deque(maxlen=math.ceil((start + 300) / FRAME_MS))
+        self.frames = queue.Queue(maxsize=math.ceil(120000 / FRAME_MS))
+        self.phrases = queue.Queue()
+        self.lines = queue.Queue()
+        self.preview_s = setting('TRANSLATE_PREVIEW_MS', '250', 100, 10000) / 1000
+        self.preview_frames = math.ceil(self.preview_s * 1000 / FRAME_MS)
+        # When the English already sent to the players will have finished playing.
+        self.voice_end = 0.0
+        self.tick_sound = None
+        self.next_tick = 0.0
+        # When everything sent to the players, ticks included, has finished playing.
+        self.played_end = 0.0
+        self.count = 0
+        self.recordings = None
+        if os.environ.get('TALKEY_TRANSLATE_RECORD', '0') == '1':
+            archive = Path(os.environ.get('TALKEY_ARCHIVE_DIR', Path.home() / '.local/share/talkey/recordings'))
+            self.recordings = archive / 'translate' / time.strftime('%Y%m%d-%H%M%S')
+            self.recordings.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.stream = os.environ.get('TALKEY_TRANSLATE_STREAM', '1') == '1'
+        self.previews = ThreadPoolExecutor(max_workers=1)
+        self.previewing = None
+        self.recent = deque(maxlen=2)
+        # The last two phrases, as the HUD shows them. The lock also guards the counts.
+        self.subtitles = deque(maxlen=2)
+        self.lock = threading.Lock()
+        self.hearing = False
+        self.inflight = 0
+        self.error = None
+        self.capture = None
+        self.players = []
+        self.stopping = threading.Event()
+
+    def state(self, value):
+        if (self.run_dir / 'state').read_text().strip() == 'off':
+            raise StopRequested()
+        tmp = self.run_dir / 'state.tmp'
+        tmp.write_text(value + '\n')
+        tmp.replace(self.run_dir / 'state')
+        (self.state_dir / 'session.changed').write_text('changed\n')
+
+    def show(self):
+        """Publish the subtitles; the caller holds the lock."""
+        tmp = self.state_dir / 'translate.subtitles.tmp'
+        tmp.write_text(json.dumps({'lines': list(self.subtitles)}) + '\n')
+        tmp.replace(self.state_dir / 'translate.subtitles')
+
+    def mark(self, inflight=0, hearing=None):
+        """translate.showing exists while a phrase is heard, translated or spoken."""
+        with self.lock:
+            self.inflight += inflight
+            if hearing is not None:
+                self.hearing = hearing
+            marker = self.state_dir / 'translate.showing'
+            if self.hearing or self.inflight:
+                if not marker.exists():
+                    marker.touch()
+            else:
+                marker.unlink(missing_ok=True)
+
+    def preview_phrase(self, phrase, pcm, prompt):
+        try:
+            with phrase.lock:
+                if phrase.closed:
+                    return
+                text = preview(pcm, self.url, self.language, prompt)
+                with self.lock:
+                    phrase.shown['dutch'] = text
+                    self.show()
+                if self.stream and re.search(r'\w', text):
+                    self.advance(phrase, text)
+        except Exception as error:
+            print(f'talkey translate: preview failed: {error}', file=sys.stderr)
+
+    def advance(self, phrase, text):
+        """Draft the English for the phrase so far and speak what the drafts agree on."""
+        if phrase.agreement is None:
+            phrase.agreement = Agreement(self.preview_s)
+        draft = self.translate(text, phrase.agreement.spoken)
+        piece = phrase.agreement.offer(text.split(), draft, self.voice_end - time.monotonic())
+        if piece:
+            phrase.english.append(piece)
+            phrase.segments.put((piece, False))
+            with self.lock:
+                phrase.shown['english'] = ' '.join(phrase.english) + ' …'
+                self.show()
+
+    def call(self, action):
+        child = subprocess.Popen([self.command, '_translate', action], env=dict(os.environ))
+        child.wait()
+        if child.returncode:
+            raise RuntimeError(f'translate {action} failed ({child.returncode})')
+
+    def guard(self, work):
+        def run():
+            try:
+                work()
+            except Exception as error:
+                self.error = error
+        threading.Thread(target=run, daemon=True).start()
+
+    def read_audio(self):
+        while not self.stopping.is_set():
+            frame = self.capture.stdout.read(FRAME_BYTES)
+            if len(frame) != FRAME_BYTES:
+                raise RuntimeError('microphone stream ended')
+            try:
+                self.frames.put_nowait(frame)
+            except queue.Full as error:
+                raise RuntimeError('translation fell over 120 seconds behind capture') from error
+
+    def recognize(self):
+        while True:
+            pcm, phrase = self.phrases.get()
+            # The last sentences steer whisper toward words that fit what was being said.
+            text = transcribe(pcm, self.url, self.language, ' '.join(self.recent) or None, 16000, 1)
+            with phrase.lock:
+                phrase.closed = True
+                if not re.search(r'\w', text) or HALLUCINATION.search(text):
+                    with self.lock:
+                        kept = [shown for shown in self.subtitles if shown is not phrase.shown]
+                        self.subtitles.clear()
+                        self.subtitles.extend(kept)
+                        self.show()
+                    phrase.segments.put(None)
+                    continue
+                self.recent.append(text)
+                with self.lock:
+                    phrase.shown.update(dutch=text, live=False)
+                    self.show()
+                words, agreement = text.split(), phrase.agreement or Agreement(self.preview_s)
+                if re.search(r'\w', ' '.join(words[resume(agreement.said, words):])):
+                    english = self.translate(text, agreement.spoken)
+                    if english:
+                        phrase.english.append(english)
+                        phrase.segments.put((english, True))
+                phrase.segments.put(None)
+                self.translate.remember(text, ' '.join(phrase.english))
+                with self.lock:
+                    phrase.shown['english'] = ' '.join(phrase.english)
+                    self.show()
+
+    def send(self, pcm, record):
+        """Play audio; record collects what the microphone carried, including the silences."""
+        start = max(time.monotonic(), self.played_end)
+        if record is not None:
+            if record:
+                record.extend(bytes(2 * round((start - self.played_end) * self.voice.sample_rate)))
+            record.extend(pcm)
+        self.played_end = start + len(pcm) / 2 / self.voice.sample_rate
+        for player in self.players:
+            player.stdin.write(pcm)
+            player.stdin.flush()
+
+    def keep(self, phrase, english):
+        """Save what was heard and what was said, to listen back to a phrase."""
+        names = (f'{phrase.number:03d}-{self.language}.wav', f'{phrase.number:03d}-en.wav')
+        for name, pcm, rate in ((names[0], phrase.audio, 16000), (names[1], english, self.voice.sample_rate)):
+            with wave.open(str(self.recordings / name), 'wb') as sound:
+                sound.setnchannels(1)
+                sound.setsampwidth(2)
+                sound.setframerate(rate)
+                sound.writeframes(pcm[:len(pcm) // 2 * 2])
+        return names
+
+    def speak(self):
+        logs = [(self.run_dir / 'lines.log').open('a', buffering=1)]
+        if self.recordings:
+            logs.append((self.recordings / 'lines.log').open('a', buffering=1))
+        while True:
+            phrase = self.lines.get()
+            first, pieces, waits, stalls = None, [], [], []
+            record = bytearray() if self.recordings else None
+            while True:
+                try:
+                    item = phrase.segments.get(timeout=.05)
+                except queue.Empty:
+                    if pieces:
+                        self.tick(record)
+                    continue
+                if item is None:
+                    break
+                segment, last = item
+                pieces.append(segment)
+                for i, chunk in enumerate(self.voice.stream(segment, last)):
+                    now = time.monotonic()
+                    if first is None:
+                        first = now
+                    # The players had run out of English: silence the listener heard.
+                    quiet = now - self.voice_end
+                    if first != now and quiet > 0:
+                        (stalls if i else waits).append(quiet)
+                    self.voice_end = max(self.voice_end, now) + len(chunk) / 2 / self.voice.sample_rate
+                    self.send(chunk, record)
+            self.voice.end()
+            if first is not None:
+                entry = (f'{phrase.shown["dutch"]}\n  -> {phrase.shown["english"]}\n'
+                         f'  spoken as: {" | ".join(pieces)}\n'
+                         f'  voice began {first - phrase.started:.2f}s after you did, '
+                         f'{first - phrase.ended:+.2f}s from your pause\n'
+                         f'  silence before later pieces: {sum(waits):.2f}s in {len(waits)}, '
+                         f'stutter inside pieces: {sum(stalls):.2f}s in {len(stalls)}\n')
+                if self.recordings:
+                    entry += '  audio: {}, {}\n'.format(*self.keep(phrase, bytes(record)))
+                for log in logs:
+                    log.write(entry)
+            self.mark(-1)
+
+    def tick(self, record):
+        """Between pieces of a phrase, tick softly so listeners know the speaker has not stopped.
+
+        The tick is not English, so it does not move voice_end: the pieces still go out as
+        soon as the voice needs them.
+        """
+        now = time.monotonic()
+        if self.tick_sound and now >= max(self.voice_end + TICK_AFTER_S, self.next_tick):
+            self.send(self.tick_sound, record)
+            self.next_tick = now + TICK_EVERY_S
+
+    def player(self, device):
+        command = ['pacat', '--playback', '--raw', '--format=s16le', f'--rate={self.voice.sample_rate}',
+                   '--channels=1', '--latency-msec=60', '--client-name=talkey', '--stream-name=translation']
+        if device:
+            command.append(f'--device={device}')
+        return subprocess.Popen(command, stdin=subprocess.PIPE)
+
+    def run(self):
+        deadline = time.monotonic() + 5
+        while not (self.run_dir / 'worker.pid.start').exists():
+            if time.monotonic() > deadline:
+                raise RuntimeError('translator identity was not published')
+            time.sleep(.01)
+        # Ollama loads its model while PyTorch and the voice load; the first phrase is not slow.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            warming = pool.submit(self.translate, 'Hallo.')
+            self.voice = Voice(self.voice_path)
+            for _ in self.voice.stream('Hello.'):
+                pass
+            warming.result()
+        self.tick_sound = wait_sound(self.voice.sample_rate)
+        self.players.append(self.player(os.environ.get('TALKEY_TRANSLATE_SINK', 'talkey_translate')))
+        if os.environ.get('TALKEY_TRANSLATE_MONITOR', '0') == '1':
+            self.players.append(self.player(None))
+        self.capture = subprocess.Popen([
+            os.environ.get('TALKEY_FFMPEG', 'ffmpeg'), '-nostdin', '-hide_banner', '-loglevel', 'error',
+            '-f', 'pulse', '-i', os.environ.get('TALKEY_SOURCE', 'default'),
+            '-ac', '1', '-ar', '16000', '-f', 's16le', '-'], stdout=subprocess.PIPE)
+        for work in (self.read_audio, self.recognize, self.speak):
+            self.guard(work)
+        self.call('ready')
+        audio = phrase = None
+        while True:
+            if self.error:
+                raise self.error
+            try:
+                frame = self.frames.get(timeout=.1)
+            except queue.Empty:
+                continue
+            event = self.endpoint.update(self.vad.speech(frame))
+            if audio is None:
+                self.preroll.append(frame)
+            else:
+                audio.append(frame)
+            if event == 'start':
+                audio = list(self.preroll)
+                self.preroll.clear()
+                self.count += 1
+                phrase, previewed = Phrase(time.monotonic(), self.count), len(audio)
+                with self.lock:
+                    self.subtitles.append(phrase.shown)
+                    self.show()
+                # The speaker takes phrases in the order they began, while their English streams in.
+                self.lines.put(phrase)
+                self.mark(hearing=True)
+                self.state('hearing')
+            elif event == 'end':
+                phrase.ended = time.monotonic()
+                phrase.audio = b''.join(audio)
+                self.phrases.put((phrase.audio, phrase))
+                audio = None
+                self.mark(1, hearing=False)
+                self.state('listening')
+            elif (audio is not None and len(audio) - previewed >= self.preview_frames
+                    and (self.previewing is None or self.previewing.done())):
+                previewed = len(audio)
+                self.previewing = self.previews.submit(self.preview_phrase, phrase, b''.join(audio),
+                                                       ' '.join(self.recent) or None)
+
+    def close(self):
+        self.stopping.set()
+        self.previews.shutdown(wait=False, cancel_futures=True)
+        (self.state_dir / 'translate.showing').unlink(missing_ok=True)
+        for process in [self.capture] + self.players:
+            if process:
+                process.terminate()
+
+
+def export_voice(source, target):
+    from pocket_tts import TTSModel, export_model_state
+    model = TTSModel.load_model(language=os.environ.get('TALKEY_TRANSLATE_TTS', 'english'))
+    if not model.has_voice_cloning:
+        raise ValueError('voice cloning weights unavailable: accept the terms at '
+                         'https://huggingface.co/kyutai/pocket-tts and run: hf auth login')
+    Path(target).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    export_model_state(model.get_state_for_audio_prompt(source), target)
+    # The clone speaks as you; nobody else on the machine should be able to read it.
+    os.chmod(target, 0o600)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--check', action='store_true')
+    parser.add_argument('--export-voice', nargs=2, metavar=('WAV', 'SAFETENSORS'))
+    args = parser.parse_args()
+    if args.export_voice:
+        export_voice(*args.export_voice)
+        return 0
+    # Downloads happen in setup. A live session never reaches the network.
+    os.environ['HF_HUB_OFFLINE'] = '1'
+    signal.signal(signal.SIGTERM, stop_requested)
+    signal.signal(signal.SIGINT, stop_requested)
+    vad = interpreter = None
+    try:
+        setting('VAD_START_MS', '160', 32, 2000)
+        setting('TRANSLATE_SILENCE_MS', '500', 160, 10000)
+        setting('TRANSLATE_MAX_S', '15', 1, 600)
+        setting('TRANSLATE_QUICK_SILENCE_MS', '250', 64, 10000)
+        setting('TRANSLATE_QUICK_AFTER_S', '4', 0, 600)
+        for name in ('STREAM', 'TICK', 'RECORD'):
+            if os.environ.get(f'TALKEY_TRANSLATE_{name}', '1') not in ('0', '1'):
+                raise ValueError(f'TALKEY_TRANSLATE_{name} must be 0 or 1')
+        if os.environ.get('TALKEY_TRANSLATE_TEMP'):
+            setting('TRANSLATE_TEMP', '0.3', 0.05, 1.5)
+        voice = default_voice()
+        if not Path(voice).is_file():
+            raise ValueError(f'no voice at {voice}; run: talkey-setup translate')
+        # Finding the package is enough here; importing PyTorch would double the startup.
+        if importlib.util.find_spec('pocket_tts') is None:
+            raise ValueError('Pocket TTS is not installed in this Python; run: talkey-setup translate')
+        vad = Silero()
+        if not args.check:
+            interpreter = Interpreter(vad, voice, Translator())
+            interpreter.run()
+    except StopRequested:
+        pass
+    except Exception as error:
+        print(f'talkey translate: {error}', file=sys.stderr)
+        if interpreter:
+            try:
+                interpreter.call('error')
+            except (Exception, StopRequested):
+                pass
+        return 1
+    finally:
+        if interpreter:
+            interpreter.close()
+        if vad:
+            vad.close()
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

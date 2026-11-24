@@ -86,7 +86,7 @@
       (label :class "help-what" :halign "start" :text "tap = send/cancel/plain  ·  double-tap = auto Enter"))
     (box :class "help-row" :orientation "horizontal" :space-evenly false
       (label :class "help-key key-memo" :halign "start" :text {help.memo})
-      (label :class "help-what" :halign "start" :text "double-tap = restart  ·  else memo"))
+      (label :class "help-what" :halign "start" :text "double-tap = restart, or live translation when idle  ·  hold = memo"))
     (label :class "help-note" :halign "start" :xalign 0
            :text "hold to talk, tap to toggle, or double-tap to toggle auto listening.
 in auto: tap during speech to finish the phrase; tap while waiting to exit.

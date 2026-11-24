@@ -18,6 +18,7 @@
 #   talkey-setup service    # just the whisper service
 #   talkey-setup vad        # check the auto-mode speech detector and show model instructions
 #   talkey-setup turn       # check optional Smart Turn and show local setup instructions
+#   talkey-setup translate  # set up live translation in your own voice
 #
 # Safe to re-run: every step reports what is already done and moves on.
 #
@@ -36,7 +37,7 @@ done
 CONFIG_DIR="$(dirname "$TALKEY_CONFIG")"
 MODEL_DIR="${WHISPER_MODEL_DIR:-$HOME/.local/share/whisper}"
 
-for module in ui deps config models service bindings keys; do
+for module in ui deps config models service bindings keys translate; do
   . "$DATA_DIR/lib/setup/$module.sh"
 done
 
@@ -62,7 +63,8 @@ main() {
     deps)    step_deps ;;
     vad)     step_vad; return $? ;;
     turn)    step_turn; return $? ;;
-    *) die "unknown step '$what' - try: all, model, service, keys, deps, vad, turn" ;;
+    translate) step_translate; return $? ;;
+    *) die "unknown step '$what' - try: all, model, service, keys, deps, vad, turn, translate" ;;
   esac
   # The ending reports what actually happened. Anything a step could not finish
   # is listed, in the order it has to be done, with the command that fixes it.

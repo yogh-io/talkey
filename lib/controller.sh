@@ -162,6 +162,13 @@ finish_memo() {
   trap session_cleanup EXIT
   record_stop || return 1
   migrate_finished_legacy
+  local pressed; pressed="$(cat "$PRESSTIME" 2>/dev/null || echo 0)"
+  if [[ "$ACTION" == release ]] && (( EVENT_MS - ${pressed:-0} < HOLD_MS )); then
+    # A tap is the first half of a double tap, not a memo: keep its audio, skip playback.
+    printf '%s\n' "$pressed" > "$STATE_DIR/memo.tap"
+    if keep_cancelled "$RAW" memo; then rm -f "$RAW"; fi
+    return 0
+  fi
   unlock_commands
   # Retain raw audio on either playback or archive failure.
   playback || return 1
@@ -172,6 +179,8 @@ main() {
   case "$MODE" in
     auto) auto_command ;;
     _auto) auto_event ;;
+    translate) translate_command ;;
+    _translate) translate_event ;;
     _gesture) gesture_fire ;;
     _submit) submit_fire ;;
     help)
@@ -188,9 +197,15 @@ main() {
         MODE=memo
       fi
       session_load memo || session_paths "$STATE_DIR"
+      local tap=0
+      if [[ "$ACTION" == press && -s "$STATE_DIR/memo.tap" ]]; then
+        tap="$(cat "$STATE_DIR/memo.tap")"; rm -f "$STATE_DIR/memo.tap"
+      fi
       case "$ACTION" in
         press|start)
-          if ! process_alive "$PIDFILE"; then
+          if (( DOUBLE_TAP_MS && EVENT_MS - tap <= DOUBLE_TAP_MS )); then
+            if translate_active; then translate_stop; else translate_start; fi
+          elif ! process_alive "$PIDFILE"; then
             SAMPLE_RATE="$CONFIGURED_SAMPLE_RATE"; CHANNELS="$CONFIGURED_CHANNELS"
             session_new; printf '%s\n' "$EVENT_MS" > "$PRESSTIME"; record_start
           fi ;;
