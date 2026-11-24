@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -110,6 +111,61 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(worker.resume(said, 'een twee drieë vier, vijf'.split()), 4)
         self.assertEqual(worker.resume(said, 'een twee drie'.split()), 3)
         self.assertEqual(worker.resume([], 'een twee'.split()), 0)
+
+
+class OnAirTests(unittest.TestCase):
+    def test_pieces_carry_when_they_play_and_the_hud_stays_until_they_have(self):
+        with tempfile.TemporaryDirectory(prefix='talkey-onair-') as tmp:
+            state, run = Path(tmp)/'state', Path(tmp)/'run'
+            state.mkdir(); run.mkdir()
+            env = {'TALKEY_TRANSLATE_RUN': str(run), 'TALKEY_STATE_DIR': str(state)}
+            os.environ.update(env)
+            self.addCleanup(lambda: [os.environ.pop(name) for name in env])
+            interpreter = worker.Interpreter(None, None, None)
+
+            class Voice:
+                sample_rate = 1000
+
+                def stream(self, text, last=True):
+                    yield bytes(2 * 300)
+
+                def end(self):
+                    pass
+
+            interpreter.voice = Voice()
+            phrase = worker.Phrase(time.monotonic(), 1)
+            phrase.ended = time.monotonic()
+            interpreter.subtitles.append(phrase.shown)
+            interpreter.lines.put(phrase)
+            interpreter.mark(1)
+            threading.Thread(target=interpreter.speak, daemon=True).start()
+            before = time.time()
+            interpreter.queue(phrase, 'Hello there,', False)
+            interpreter.queue(phrase, 'how are you?', True)
+            phrase.segments.put(None)
+
+            def pieces():
+                return json.loads((state/'translate.subtitles').read_text())['lines'][0]['pieces']
+            deadline = time.monotonic() + 3
+            while not all(piece['end'] for piece in pieces()):
+                self.assertLess(time.monotonic(), deadline, 'the pieces never finished')
+                time.sleep(.01)
+            first, second = pieces()
+            self.assertEqual([first['text'], second['text']], ['Hello there,', 'how are you?'])
+            self.assertGreaterEqual(first['start'], round(before, 3))
+            self.assertAlmostEqual(first['end'] - first['start'], .3, delta=.002)
+            # The second piece waits for the first to finish playing.
+            self.assertAlmostEqual(second['start'], first['end'], delta=.002)
+            self.assertAlmostEqual(second['end'] - second['start'], .3, delta=.002)
+            # The voice is done long before the listeners have heard it all.
+            while interpreter.inflight:
+                time.sleep(.01)
+            interpreter.mark()
+            self.assertGreater(second['end'], time.time())
+            self.assertTrue((state/'translate.showing').exists())
+            time.sleep(max(0, second['end'] - time.time()) + .02)
+            interpreter.mark()
+            self.assertFalse((state/'translate.showing').exists())
 
 
 class TranslatorTests(unittest.TestCase):
@@ -257,12 +313,24 @@ class TranslateRuntimeTests(unittest.TestCase):
 
     def test_subtitles_show_what_was_heard_and_said(self):
         self.listen()
-        self.say('Ik bel je morgen op.', 'Tot dan.')
-        self.wait_for(lambda: self.spoken().endswith(b'EN:Tot dan.'))
+        before = time.time()
+        self.say('Ik bel je morgen op.', 'Tot dan.', 'Dag.')
+        self.wait_for(lambda: self.spoken().endswith(b'EN:Dag.'))
         self.wait_for(lambda: not (self.state/'translate.showing').exists())
-        self.assertEqual(self.subtitles(), [
-            {'dutch': 'Ik bel je morgen op.', 'english': 'EN:Ik bel je morgen op.', 'live': False},
-            {'dutch': 'Tot dan.', 'english': 'EN:Tot dan.', 'live': False}])
+        lines = self.subtitles()
+        times = [(piece.pop('start'), piece.pop('end')) for line in lines for piece in line['pieces']]
+        self.assertEqual(lines, [
+            {'n': 1, 'dutch': 'Ik bel je morgen op.', 'english': 'EN:Ik bel je morgen op.', 'live': False,
+             'done': True, 'pieces': [{'text': 'EN:Ik bel je morgen op.'}]},
+            {'n': 2, 'dutch': 'Tot dan.', 'english': 'EN:Tot dan.', 'live': False,
+             'done': True, 'pieces': [{'text': 'EN:Tot dan.'}]},
+            {'n': 3, 'dutch': 'Dag.', 'english': 'EN:Dag.', 'live': False,
+             'done': True, 'pieces': [{'text': 'EN:Dag.'}]}])
+        # Unix times, so the HUD can hold them against its own clock.
+        for start, end in times:
+            self.assertLessEqual(round(before, 3), start)
+            self.assertLessEqual(start, end)
+            self.assertLessEqual(end, time.time())
 
     def test_the_hud_meters_the_microphone_only_while_a_phrase_shows(self):
         self.listen()
@@ -295,10 +363,13 @@ class TranslateRuntimeTests(unittest.TestCase):
         # The draft for "een twee" was kept when "drie" was heard, so it is spoken during the phrase.
         self.wait_for(lambda: self.spoken() == b'EN:een twee')
         self.assertEqual(self.status()['state'], 'hearing')
-        self.assertEqual(self.subtitles()[-1]['english'], 'EN:een twee …')
+        self.assertEqual(self.subtitles()[-1]['english'], 'EN:een twee')
+        self.assertFalse(self.subtitles()[-1]['done'])
         self.mute.touch()
         self.wait_for(lambda: self.spoken() == b'EN:een tweedrie vier.')
+        self.wait_for(lambda: self.subtitles()[-1]['done'])
         self.assertEqual(self.subtitles()[-1]['english'], 'EN:een twee drie vier.')
+        self.assertEqual([piece['text'] for piece in self.subtitles()[-1]['pieces']], ['EN:een twee', 'drie vier.'])
         log = (self.state/'translate.current/lines.log').read_text()
         self.assertIn('spoken as: EN:een twee | drie vier.', log)
         self.assertRegex(log, r'voice began [0-9.]+s after you did, -[0-9.]+s from your pause')

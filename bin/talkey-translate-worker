@@ -42,6 +42,8 @@ TICK_AFTER_S = 0.3
 TICK_EVERY_S = 0.5
 # Whisper's stock captions for near-silent Dutch and English clips.
 HALLUCINATION = re.compile(r'amara\.org|ondertitel|bedankt voor het kijken|thanks for watching', re.I)
+# Phrases the HUD can scroll back through.
+HISTORY = 100
 
 
 def bare(word):
@@ -182,7 +184,8 @@ class Phrase:
     def __init__(self, started, number):
         self.started, self.ended, self.number = started, None, number
         self.audio = b''
-        self.shown = {'dutch': '', 'english': '', 'live': True}
+        # As the HUD shows it; each piece of English gets the Unix times it starts and stops playing.
+        self.shown = {'n': number, 'dutch': '', 'english': '', 'live': True, 'done': False, 'pieces': []}
         # Held while a preview or the final translation works on this phrase.
         self.lock = threading.Lock()
         self.closed = False
@@ -350,11 +353,12 @@ class Interpreter:
         self.previews = ThreadPoolExecutor(max_workers=1)
         self.previewing = None
         self.recent = deque(maxlen=2)
-        # The last two phrases, as the HUD shows them. The lock also guards the counts.
-        self.subtitles = deque(maxlen=2)
+        # The session's recent phrases, as the HUD shows them. The lock also guards the counts.
+        self.subtitles = deque(maxlen=HISTORY)
         self.lock = threading.Lock()
         self.hearing = False
         self.inflight = 0
+        self.showing = False
         self.error = None
         self.capture = None
         self.players = []
@@ -375,17 +379,36 @@ class Interpreter:
         tmp.replace(self.state_dir / 'translate.subtitles')
 
     def mark(self, inflight=0, hearing=None):
-        """translate.showing exists while a phrase is heard, translated or spoken."""
+        """translate.showing exists while a phrase is heard, translated or spoken, until its English has played."""
         with self.lock:
             self.inflight += inflight
             if hearing is not None:
                 self.hearing = hearing
-            marker = self.state_dir / 'translate.showing'
-            if self.hearing or self.inflight:
-                if not marker.exists():
+            showing = bool(self.hearing or self.inflight or time.monotonic() < self.played_end)
+            if showing != self.showing:
+                marker = self.state_dir / 'translate.showing'
+                if showing:
                     marker.touch()
-            else:
-                marker.unlink(missing_ok=True)
+                else:
+                    marker.unlink(missing_ok=True)
+                self.showing = showing
+
+    def queue(self, phrase, text, last):
+        """Hand a piece of English to the voice."""
+        piece = {'text': text, 'start': None, 'end': None}
+        phrase.english.append(text)
+        with self.lock:
+            phrase.shown['pieces'].append(piece)
+            phrase.shown['english'] = ' '.join(phrase.english)
+            self.show()
+        phrase.segments.put((piece, last))
+
+    def on_air(self, piece, **times):
+        """Publish when a piece starts and stops playing, in Unix time so the HUD can compare it to its clock."""
+        offset = time.time() - time.monotonic()
+        with self.lock:
+            piece.update({key: round(value + offset, 3) for key, value in times.items()})
+            self.show()
 
     def preview_phrase(self, phrase, pcm, prompt):
         try:
@@ -408,11 +431,7 @@ class Interpreter:
         draft = self.translate(text, phrase.agreement.spoken)
         piece = phrase.agreement.offer(text.split(), draft, self.voice_end - time.monotonic())
         if piece:
-            phrase.english.append(piece)
-            phrase.segments.put((piece, False))
-            with self.lock:
-                phrase.shown['english'] = ' '.join(phrase.english) + ' …'
-                self.show()
+            self.queue(phrase, piece, False)
 
     def call(self, action):
         child = subprocess.Popen([self.command, '_translate', action], env=dict(os.environ))
@@ -461,16 +480,15 @@ class Interpreter:
                 if re.search(r'\w', ' '.join(words[resume(agreement.said, words):])):
                     english = self.translate(text, agreement.spoken)
                     if english:
-                        phrase.english.append(english)
-                        phrase.segments.put((english, True))
+                        self.queue(phrase, english, True)
+                with self.lock:
+                    phrase.shown['done'] = True
+                    self.show()
                 phrase.segments.put(None)
                 self.translate.remember(text, ' '.join(phrase.english))
-                with self.lock:
-                    phrase.shown['english'] = ' '.join(phrase.english)
-                    self.show()
 
     def send(self, pcm, record):
-        """Play audio; record collects what the microphone carried, including the silences."""
+        """Play audio and return when it starts; record collects what the microphone carried, silences too."""
         start = max(time.monotonic(), self.played_end)
         if record is not None:
             if record:
@@ -480,6 +498,7 @@ class Interpreter:
         for player in self.players:
             player.stdin.write(pcm)
             player.stdin.flush()
+        return start
 
     def keep(self, phrase, english):
         """Save what was heard and what was said, to listen back to a phrase."""
@@ -509,9 +528,10 @@ class Interpreter:
                     continue
                 if item is None:
                     break
-                segment, last = item
-                pieces.append(segment)
-                for i, chunk in enumerate(self.voice.stream(segment, last)):
+                piece, last = item
+                pieces.append(piece['text'])
+                start = None
+                for i, chunk in enumerate(self.voice.stream(piece['text'], last)):
                     now = time.monotonic()
                     if first is None:
                         first = now
@@ -520,10 +540,16 @@ class Interpreter:
                     if first != now and quiet > 0:
                         (stalls if i else waits).append(quiet)
                     self.voice_end = max(self.voice_end, now) + len(chunk) / 2 / self.voice.sample_rate
-                    self.send(chunk, record)
+                    begins = self.send(chunk, record)
+                    if start is None:
+                        start = begins
+                        self.on_air(piece, start=start)
+                if start is None:
+                    start = max(time.monotonic(), self.played_end)
+                self.on_air(piece, start=start, end=max(start, self.played_end))
             self.voice.end()
             if first is not None:
-                entry = (f'{phrase.shown["dutch"]}\n  -> {phrase.shown["english"]}\n'
+                entry = (f'{phrase.shown["dutch"]}\n  -> {" ".join(phrase.english)}\n'
                          f'  spoken as: {" | ".join(pieces)}\n'
                          f'  voice began {first - phrase.started:.2f}s after you did, '
                          f'{first - phrase.ended:+.2f}s from your pause\n'
@@ -582,13 +608,15 @@ class Interpreter:
         while True:
             if self.error:
                 raise self.error
+            if self.showing and not (self.hearing or self.inflight):
+                self.mark()
             try:
                 frame = self.frames.get(timeout=.1)
             except queue.Empty:
                 continue
             recent.append(frame)
             # The HUD meters the microphone while it shows a phrase; idle, nothing is written.
-            if (self.hearing or self.inflight) and len(recent) == recent.maxlen:
+            if self.showing and len(recent) == recent.maxlen:
                 tmp = self.state_dir / 'translate.raw.tmp'
                 tmp.write_bytes(b''.join(recent))
                 tmp.replace(level)
