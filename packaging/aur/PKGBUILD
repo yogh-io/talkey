@@ -6,7 +6,7 @@ _name=talkey
 # A placeholder. makepkg runs pkgver() against the clone and rewrites this line
 # in place, so whatever is committed here is only what the AUR page shows until
 # the next build.
-pkgver=0.1.2
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Push-to-talk voice input for X11/i3 - hold a key, speak, the text is typed. Offline, no API key."
 arch=('any')

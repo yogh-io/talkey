@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 - 2026-11-24
+
+- Add live translation in your own voice. Double-tap the memo key, or run `talkey translate toggle`, and talkey speaks what you say in English, in a voice cloned from 25 seconds of you, into a virtual microphone called “talkey English mic” for your call app. Everything runs locally: your whisper server, an Ollama translation model (`translategemma:4b` by default) and Pocket TTS on the CPU.
+- Start the English before you finish a sentence. Every quarter second talkey translates what it has heard and speaks only English that later drafts keep, so a verb it would have to guess is never spoken. Each phrase is spoken as one continuous utterance, with a soft tick while it waits for the rest.
+- Show live subtitles in the HUD while translating: your words as whisper hears them, with the English under them.
+- Add `talkey translate start|stop|toggle|status` for status bars, and `talkey-setup translate` to install the voice, record your sample and clone it.
+- Optionally keep each translated phrase’s audio (`TALKEY_TRANSLATE_RECORD=1`): what was heard and what the microphone carried, pauses included, to listen back.
+- Keep auto-mode takes at `TALKEY_SAMPLE_RATE` when it is 32 or 48 kHz, while detection still runs at 16 kHz, so archived audio of your voice no longer stops at 8 kHz.
+- Remove whisper’s text translation from the memo key, with its whisper-cli path and small model download. A quick memo tap is no longer played back as a memo.
+
+Translate mode needs its own Python environment with Pocket TTS pinned to a commit that can continue an utterance; `talkey-setup translate` shows how. The voice cloning weights are gated on Hugging Face: accept the terms once and log in, and after that nothing leaves your machine. Your voice sample and its clone stay in `~/.local/share/talkey/translate`, readable only by you. Translation is as good as a 4B model: idioms and times like “half elf” can come out wrong, and the subtitles show it when they do.
+
 ## 0.1.2 - 2026-11-05
 
 - Add an optional “message complete” cue, checked during pauses without waiting for semantic completion. The final text excludes the cue and follows the Enter setting.
