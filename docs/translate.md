@@ -273,6 +273,41 @@ stops the other. Push-to-talk dictation still works, but what you dictate is
 also translated. While you dictate, the dictation HUD takes the translate
 window's place.
 
+### Subtitles on your camera
+
+talkey can also put the subtitles on your video, so the people in your call can
+read along and you can check yourself in your own preview. It is a virtual
+camera called **talkey camera**: your webcam, with the phrase on air drawn at
+the bottom. What you said is on top, slanted while it is still being heard; the
+English is under it, marked the same way as in the translate window.
+
+It needs the v4l2loopback kernel module, set up once:
+
+```bash
+sudo pacman -S v4l2loopback-dkms   # elsewhere: your distribution's v4l2loopback, with kernel headers
+echo v4l2loopback | sudo tee /etc/modules-load.d/v4l2loopback.conf
+echo 'options v4l2loopback devices=1 video_nr=10 card_label="talkey camera" exclusive_caps=1' \
+  | sudo tee /etc/modprobe.d/v4l2loopback.conf
+```
+
+Then reboot. Browsers only list the camera with `exclusive_caps=1`, and talkey
+finds it by the name `talkey camera`.
+
+1. Start translating. When the talkey camera exists, it starts too.
+2. In your call app, choose **talkey camera** as your camera.
+3. Stopping translation leaves the camera on, without subtitles, so your call
+   keeps its video. `talkey camera stop` turns it off, and `talkey camera start`
+   turns it on without translating.
+
+Your webcam only runs while an app shows the talkey camera, so its light goes off
+when you leave the call, even with the camera on. Until the webcam has started,
+the app gets a black picture. The subtitles appear when you start talking and stay
+a few seconds after the English has played, like the translate window.
+
+Most call apps mirror your own preview, so the subtitles look backwards to you
+but read normally for everyone else. Most apps can switch the mirroring off in
+their video settings.
+
 ## What to expect
 
 - **Delay.** The English usually starts 2 to 3.5 seconds after you start a
@@ -316,11 +351,17 @@ after changing them.
 | `TALKEY_TRANSLATE_MAX_S` | `15` | The longest phrase; it is cut here even without a pause |
 | `TALKEY_TRANSLATE_MONITOR` | `0` | `1` also plays the English on your own output; use headphones |
 | `TALKEY_TRANSLATE_RECORD` | `0` | `1` keeps each phrase's audio, see below |
+| `TALKEY_TRANSLATE_CAMERA` | `1` | Start the talkey camera with translation when it exists; `0` leaves it to `talkey camera start` |
+| `TALKEY_CAMERA_INPUT` | your first webcam | The webcam the talkey camera shows, like `/dev/video0` |
+| `TALKEY_CAMERA_SIZE` | `1280x720` | Size of the talkey camera; the webcam is scaled and cropped to fill it |
+| `TALKEY_CAMERA_FPS` | `30` | Frames per second of the talkey camera |
 
 For a status bar, `talkey translate status` prints one JSON object, for example
 `{"enabled":true,"state":"hearing","microphone":"talkey_translate_mic"}`. The
 state is `off`, `starting`, `listening`, `hearing` or `error`.
-`talkey translate toggle` switches it from a click.
+`talkey translate toggle` switches it from a click. `talkey camera status`
+prints `{"enabled":true,"device":"/dev/video10"}`, with an empty device when
+there is no talkey camera.
 
 ## Listening back and debugging
 
@@ -361,6 +402,8 @@ parecord --device=talkey_translate_mic check.wav
 - Recordings of your calls are off by default (`TALKEY_TRANSLATE_RECORD`).
 - `lines.log` with the text of each phrase lives in `$XDG_RUNTIME_DIR/talkey`,
   which is normally cleared when you log out.
+- The talkey camera never stores a frame. Your webcam's picture goes straight to
+  the virtual camera, and only while an app shows it.
 
 ## Troubleshooting
 
@@ -392,6 +435,13 @@ to listen, or record the microphone as shown above.
 
 **The voice does not sound like you.** See
 [Getting your voice right](#getting-your-voice-right).
+
+**Your call app does not list the talkey camera.** `talkey camera status` should
+show a device; if the device is empty, the module is not loaded or has another
+name (see [Subtitles on your camera](#subtitles-on-your-camera)). The camera must
+be on before the app looks for cameras: run `talkey camera start`, then pick the
+camera again in the app. If the picture stays black, another app may have your
+webcam open; the log says so.
 
 **Anything else.** talkey's log is `$XDG_RUNTIME_DIR/talkey/log`, and
 `talkey doctor` checks the rest of talkey.

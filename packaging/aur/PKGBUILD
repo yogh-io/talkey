@@ -37,7 +37,9 @@ depends=(
 optdepends=(
   'whisper.cpp-model-large-v3-turbo: the default speech model (AUR) - talkey needs some model'
   'python: automatic speech detection, voice commands, live text in the HUD and translate mode'
-  'python-numpy: optional Smart Turn feature extraction'
+  'python-numpy: optional Smart Turn feature extraction, and the talkey camera'
+  'python-pillow: the talkey camera, subtitles on your video'
+  'v4l2loopback-dkms: the talkey camera, subtitles on your video'
   'python-onnxruntime: optional Smart Turn CPU inference'
   'libnotify: desktop notifications alongside the HUD, and the only feedback if you disable it'
   'ollama: translate mode (translategemma:4b) and naming archived recordings (qwen2.5:3b)'
@@ -80,6 +82,7 @@ package() {
     bin/talkey-live-pump \
     bin/talkey-auto-worker \
     bin/talkey-translate-worker \
+    bin/talkey-camera-worker \
     bin/talkey-norepeat \
     bin/talkey-whisper-server \
     bin/talkey-hud
@@ -88,7 +91,8 @@ package() {
   # so the scripts resolve it with one probe and behave identically either way.
   install -Dm644 -t "$pkgdir/usr/share/$_name" vocabulary.txt
   install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/*.sh
-  install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/smart_turn.py lib/speech.py lib/commands.py lib/vad.py lib/stretch.py
+  install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/smart_turn.py lib/speech.py lib/commands.py lib/vad.py lib/stretch.py \
+    lib/captions.py
   install -Dm644 -t "$pkgdir/usr/share/$_name/lib/vendor" \
     lib/vendor/*.py lib/vendor/LICENSE.* lib/vendor/README.md
   install -Dm644 -t "$pkgdir/usr/share/$_name/lib/setup" lib/setup/*.sh

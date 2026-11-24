@@ -181,6 +181,7 @@ main() {
     _auto) auto_event ;;
     translate) translate_command ;;
     _translate) translate_event ;;
+    camera) camera_command ;;
     _gesture) gesture_fire ;;
     _submit) submit_fire ;;
     help)

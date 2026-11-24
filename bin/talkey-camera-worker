@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""Feed the talkey camera: the webcam, with the live translation's subtitles drawn on it.
+
+The webcam only runs while an app reads the camera; v4l2loopback says when.
+"""
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import select
+import signal
+import struct
+import subprocess
+import sys
+import time
+
+for data in (Path(os.environ.get('TALKEY_DATA_DIR', '/nonexistent')),
+             Path(__file__).resolve().parent.parent, Path('/usr/share/talkey')):
+    if (data / 'lib/captions.py').is_file():
+        sys.path.insert(0, str(data / 'lib'))
+        break
+from captions import Captions, words
+
+
+def ioc(direction, number, size):
+    return direction << 30 | size << 16 | ord('V') << 8 | number
+
+
+VIDIOC_S_FMT = ioc(3, 5, 208)
+VIDIOC_S_PARM = ioc(3, 22, 204)
+VIDIOC_DQEVENT = ioc(2, 89, 136)
+VIDIOC_SUBSCRIBE_EVENT = ioc(1, 90, 32)
+BUF_TYPE_VIDEO_OUTPUT = 2
+FIELD_NONE = 1
+COLORSPACE_SMPTE170M = 1
+YU12 = int.from_bytes(b'YU12', 'little')
+# v4l2loopback's event for whether an app is reading the camera.
+CLIENT_USAGE = 0x08000000 + 0x08E00000 + 1
+SYSFS = Path(os.environ.get('TALKEY_VIDEO_SYSFS', '/sys/class/video4linux'))
+# Subtitles stay this long after the English has played, as the translate window does.
+LINGER_S = 2.5
+RETRY_S = 2.0
+
+
+class Loopback:
+    """The writing end of a v4l2loopback camera, in I420."""
+
+    def __init__(self, path, width, height, fps):
+        self.fd = os.open(path, os.O_RDWR)
+        self.size = width * height * 3 // 2
+        fmt = struct.pack('I4x12I', BUF_TYPE_VIDEO_OUTPUT, width, height, YU12, FIELD_NONE, width, self.size,
+                          COLORSPACE_SMPTE170M, 0, 0, 0, 0, 0)
+        fcntl.ioctl(self.fd, VIDIOC_S_FMT, bytearray(fmt.ljust(208, b'\0')))
+        parm = struct.pack('5I', BUF_TYPE_VIDEO_OUTPUT, 0, 0, 1, fps)
+        fcntl.ioctl(self.fd, VIDIOC_S_PARM, bytearray(parm.ljust(204, b'\0')))
+        fcntl.ioctl(self.fd, VIDIOC_SUBSCRIBE_EVENT, struct.pack('8I', CLIENT_USAGE, 0, 0, 0, 0, 0, 0, 0))
+        self.watched = False
+
+    def events(self):
+        """Read the pending events; True while an app reads the camera."""
+        while select.select([], [], [self.fd], 0)[2]:
+            event = bytearray(136)
+            fcntl.ioctl(self.fd, VIDIOC_DQEVENT, event)
+            kind, count = struct.unpack_from('I4xI', event)
+            if kind == CLIENT_USAGE:
+                self.watched = count > 0
+        return self.watched
+
+    def write(self, frame):
+        os.write(self.fd, frame)
+
+
+def webcam():
+    """The first real camera: a video node that is not virtual and is its device's main node."""
+    for node in sorted(SYSFS.glob('video*'), key=lambda p: int(p.name[5:])):
+        if '/virtual/' not in str(node.resolve()) and (node / 'index').read_text().strip() == '0':
+            return f'/dev/{node.name}'
+    raise RuntimeError('no webcam found; set TALKEY_CAMERA_INPUT')
+
+
+def input_format(listing, size):
+    """The format to ask the webcam for: compressed if it offers the size, as raw frames at that size often run slow."""
+    offers = {}
+    for kind, name, sizes in re.findall(r'(Compressed|Raw)\s*:\s*(\S+)\s*:[^:]*:\s*(.*)', listing):
+        offers.setdefault(kind, []).extend((name, s) for s in sizes.split())
+    for kind in ('Compressed', 'Raw'):
+        for name, offered in offers.get(kind, []):
+            if offered == size:
+                return name
+    return None
+
+
+def probe(ffmpeg, device, width, height):
+    """ffmpeg input options that ask the webcam for the camera's size in its best format."""
+    listing = subprocess.run([ffmpeg, '-nostdin', '-hide_banner', '-f', 'v4l2', '-list_formats', 'all', '-i', device],
+                             capture_output=True, text=True, timeout=10).stderr
+    size = f'{width}x{height}'
+    chosen = input_format(listing, size)
+    return ['-input_format', chosen, '-video_size', size] if chosen else []
+
+
+class Webcam:
+    """ffmpeg reading the webcam, scaled and cropped to the camera's size, as I420 frames."""
+
+    def __init__(self, ffmpeg, device, ask, width, height, fps):
+        self.size = width * height * 3 // 2
+        self.process = subprocess.Popen(
+            [ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-f', 'v4l2', *ask,
+             '-framerate', str(fps), '-i', device,
+             '-vf', f'scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}',
+             '-pix_fmt', 'yuv420p', '-f', 'rawvideo', '-'],
+            stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
+        self.buffer = bytearray()
+        self.live = False
+
+    def fileno(self):
+        return self.process.stdout.fileno()
+
+    def read(self):
+        """The next whole frame, None until there is one; raises once ffmpeg has ended."""
+        chunk = os.read(self.fileno(), self.size - len(self.buffer))
+        if not chunk:
+            raise RuntimeError(f'webcam stopped (ffmpeg exit {self.process.wait()})')
+        self.buffer += chunk
+        if len(self.buffer) < self.size:
+            return None
+        frame, self.buffer = self.buffer, bytearray()
+        self.live = True
+        return frame
+
+    def close(self):
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+
+
+class Subtitles:
+    """What the translate worker publishes, and whether the translate window would show it."""
+
+    def __init__(self, state_dir):
+        self.path = state_dir / 'translate.subtitles'
+        self.showing = state_dir / 'translate.showing'
+        self.stamp = None
+        self.lines = []
+        self.until = 0.0
+
+    def now(self, clock):
+        if self.showing.exists():
+            self.until = clock + LINGER_S
+        if clock >= self.until:
+            return [], []
+        try:
+            stamp = self.path.stat().st_mtime_ns
+            if stamp != self.stamp:
+                self.lines, self.stamp = json.loads(self.path.read_text())['lines'], stamp
+        except FileNotFoundError:
+            self.lines, self.stamp = [], None
+        return words(self.lines, time.time())
+
+
+def size(value):
+    match = re.fullmatch(r'(\d+)x(\d+)', value)
+    if not match or int(match[1]) % 2 or int(match[2]) % 2 or not 0 < int(match[1]) <= 3840 \
+            or not 0 < int(match[2]) <= 2160:
+        raise ValueError('TALKEY_CAMERA_SIZE must be an even WIDTHxHEIGHT, like 1280x720')
+    return int(match[1]), int(match[2])
+
+
+def main():
+    width, height = size(os.environ.get('TALKEY_CAMERA_SIZE', '1280x720'))
+    fps = int(os.environ.get('TALKEY_CAMERA_FPS', '30'))
+    if not 1 <= fps <= 60:
+        raise ValueError('TALKEY_CAMERA_FPS must be between 1 and 60')
+    device = os.environ.get('TALKEY_CAMERA_INPUT') or webcam()
+    ffmpeg = os.environ.get('TALKEY_FFMPEG', 'ffmpeg')
+    state_dir = Path(os.environ['TALKEY_STATE_DIR'])
+    loopback = Loopback(os.environ['TALKEY_CAMERA_DEVICE'], width, height, fps)
+    captions = Captions(width, height)
+    subtitles = Subtitles(state_dir)
+    blank = bytes(width * height) + bytes([128]) * (width * height // 2)
+    camera, retry, ask = None, 0.0, None
+
+    def stop(*_):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    # Apps only list the camera once something has been written to it.
+    loopback.write(blank)
+    print(f'talkey camera: {device} into {os.environ["TALKEY_CAMERA_DEVICE"]} at {width}x{height}', file=sys.stderr)
+    try:
+        while True:
+            watched = loopback.events()
+            if watched and camera is None and time.monotonic() >= retry:
+                if ask is None:
+                    ask = probe(ffmpeg, device, width, height)
+                camera = Webcam(ffmpeg, device, ask, width, height, fps)
+            elif not watched and camera is not None:
+                camera.close()
+                camera = None
+            # Until the webcam delivers, a watching app gets blank frames at the frame rate.
+            filling = watched and not (camera and camera.live)
+            readable, _, urgent = select.select([camera] if camera else [], [], [loopback.fd],
+                                                1 / fps if filling else None)
+            if urgent:
+                continue
+            if readable:
+                try:
+                    frame = camera.read()
+                except RuntimeError as error:
+                    print(f'talkey camera: {error}', file=sys.stderr)
+                    camera.close()
+                    camera, retry = None, time.monotonic() + RETRY_S
+                    continue
+                if frame is None:
+                    continue
+            elif filling:
+                frame = bytearray(blank)
+            else:
+                continue
+            captions.draw(frame, *subtitles.now(time.monotonic()))
+            loopback.write(frame)
+    finally:
+        if camera:
+            camera.close()
+
+
+if __name__ == '__main__':
+    sys.exit(main())

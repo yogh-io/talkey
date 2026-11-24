@@ -24,6 +24,7 @@ runs a background Python capture/VAD worker.
 | `bin/talkey-translate-worker`, `lib/translate.sh` | Live translation: capture, recognition, Ollama translation, Pocket TTS and the virtual microphone |
 | `lib/vad.py` | Silero VAD through whisper.cpp and audio-time endpoints, shared by both workers |
 | `lib/stretch.py` | Changes the pace of the translated voice without changing its pitch (WSOLA), as it streams |
+| `bin/talkey-camera-worker`, `lib/camera.sh`, `lib/captions.py` | The talkey camera: the webcam with the translation's subtitles, written to a v4l2loopback device |
 | `lib/smart_turn.py`, `lib/vendor/` | Optional CPU ONNX completion inference and pinned Whisper feature extraction |
 | `lib/hud.sh`, `integrations/eww/` | Presentation, meter rendering and window lifecycle |
 | `lib/install.sh`, `setup/`, `packaging/aur/` | Unit rendering, checkout setup, build and packaging |
@@ -212,6 +213,21 @@ removed on stop, so applications keep the microphone selected. Start refuses a
 capture source that is the translation microphone itself. Model weights are only
 downloaded by `talkey-setup translate`; the worker sets `HF_HUB_OFFLINE=1`
 before importing Pocket TTS.
+
+The talkey camera is the v4l2loopback device named `talkey camera`.
+`talkey-camera-worker` opens it as the writer, sets an I420 format and writes one
+black frame, because with `exclusive_caps=1` apps only list a device someone
+writes to. It subscribes to v4l2loopback's client usage event, which says whether
+an app is reading the camera. Only then does it run ffmpeg on the webcam, scaled
+and cropped to the camera's size, and it stops ffmpeg when the app stops reading.
+Until the first webcam frame it writes black frames at the frame rate. On each
+frame it draws the subtitles from `translate.subtitles` while
+`translate.showing` exists and a linger after, with the translate window's rules
+for which phrase and words are on air (`lib/captions.py`). The subtitle box is
+rendered again only when its words or their looks change; per frame it is a blend
+into the rows it covers. Starting translation starts the worker when the device
+exists (`TALKEY_TRANSLATE_CAMERA`); stopping translation leaves it running, so a
+call keeps its video.
 
 ## Configuration and installation
 

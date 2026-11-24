@@ -49,6 +49,7 @@ translate_start() {
   TALKEY_TRANSLATE_SINK="$TRANSLATE_SINK" TALKEY_ARCHIVE_DIR="$ARCHIVE_DIR" \
     "$python" "$SCRIPT_DIR/talkey-translate-worker" 9>&- < /dev/null >> "$STATE_DIR/log" 2>&1 &
   process_save "$!" "$TRANSLATE_DIR/worker.pid" || { translate_state error; return 1; }
+  camera_follow_translate
   notify 'translate starting - loading the voice' 3000
 }
 

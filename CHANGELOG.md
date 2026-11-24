@@ -5,6 +5,7 @@
 - Show live translation in a window of its own, wider than the dictation HUD: the recent phrases of the session, what was heard and the English that was said, newest at the bottom. The dictation HUD is unchanged.
 - Highlight the English your listeners hear right now. talkey knows when each piece of English plays, so which piece is on air is exact; the words inside it follow an estimate. English that is translated but not played yet is shown apart.
 - Scroll back through the session with the mouse wheel over the translate window. The window never takes the keyboard focus.
+- Put the subtitles on your video. The talkey camera is a virtual camera: your webcam, with the phrase on air drawn at the bottom in both languages and the words being spoken marked. It starts with translation when the v4l2loopback device exists, stays on when translation stops so the call keeps its video, and runs your webcam only while an app shows it. `talkey camera start|stop|toggle|status` controls it on its own.
 
 ## 0.2.0 - 2026-11-24
 

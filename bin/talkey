@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Push-to-talk dictation. Integration lives here; behavior lives in lib/.
 set -euo pipefail
-USAGE='usage: talkey dictate|dictate-alt|memo press|release|start|stop | talkey auto start|stop|toggle|status|enter-on|enter-off|enter-toggle | talkey translate start|stop|toggle|status | talkey submit | talkey help | talkey doctor'
+USAGE='usage: talkey dictate|dictate-alt|memo press|release|start|stop | talkey auto start|stop|toggle|status|enter-on|enter-off|enter-toggle | talkey translate start|stop|toggle|status | talkey camera start|stop|toggle|status | talkey submit | talkey help | talkey doctor'
 MODE="${1:-}"; ACTION="${2:-}"
 case "$MODE/$ACTION" in
   --help/|-h/) printf '%s\n' "$USAGE"; exit 0 ;;
   dictate/press|dictate/release|dictate/start|dictate/stop|dictate-alt/press|dictate-alt/release|dictate-alt/start|dictate-alt/stop|memo/press|memo/release|memo/start|memo/stop|submit/|help/|doctor/) ;;
   auto/start|auto/stop|auto/toggle|auto/status|auto/enter-on|auto/enter-off|auto/enter-toggle|_auto/begin|_auto/finish|_auto/error|_auto/idle|_gesture/fire|_submit/fire) ;;
   translate/start|translate/stop|translate/toggle|translate/status|_translate/ready|_translate/error) ;;
+  camera/start|camera/stop|camera/toggle|camera/status) ;;
   *) printf '%s\n' "$USAGE" >&2; exit 2 ;;
 esac
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -21,7 +22,7 @@ if [[ "$MODE" == dictate-alt ]]; then
   MODE=dictate; LANG_OVERRIDE="${TALKEY_LANG2:-}"
   [[ -n "$LANG_OVERRIDE" ]] || { echo 'talkey: set TALKEY_LANG2 for dictate-alt' >&2; exit 1; }
 fi
-for module in settings session display output transcription archive recording gestures auto translate commands controller; do
+for module in settings session display output transcription archive recording gestures auto camera translate commands controller; do
   . "$DATA_DIR/lib/$module.sh"
 done
 SOUND_DIR="${TALKEY_SOUND_DIR:-$DATA_DIR/sounds}"

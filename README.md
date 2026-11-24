@@ -296,7 +296,8 @@ call hear you in English, in your own voice, while you talk in your own language
 talkey listens to your microphone, translates what you say, and speaks it into a
 virtual microphone called **talkey English mic** that you pick in your call app.
 A window shows what it heard and what it said as you go, which English your
-listeners hear right now, and scrolls back through the session.
+listeners hear right now, and scrolls back through the session. A virtual camera
+can put the same subtitles on your video.
 
 All of it runs on your machine: your whisper server for the words, an Ollama
 model (`translategemma:4b`) for the translation, and Pocket TTS on the CPU for a
