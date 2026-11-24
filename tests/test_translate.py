@@ -433,6 +433,15 @@ class TranslateRuntimeTests(unittest.TestCase):
         self.wait_for(lambda: self.spoken() == b'EN:Hallo.')
         self.assertFalse((self.root/'archive'/'translate').exists())
 
+    def test_other_sink_names_keep_a_second_instance_private(self):
+        self.env.update(TALKEY_TRANSLATE_SINK='test_out', TALKEY_TRANSLATE_MIC='test_out_mic')
+        self.listen()
+        self.say('Hallo.')
+        self.wait_for(lambda: self.spoken() == b'EN:Hallo.')
+        self.assertIn('--device=test_out', json.loads((self.root/'pacat-args').read_text().splitlines()[0]))
+        self.assertEqual((self.root/'devices').read_text().split(), ['sinks:test_out', 'sources:test_out_mic'])
+        self.assertEqual(self.status()['microphone'], 'test_out_mic')
+
     def test_streaming_off_waits_for_the_pause(self):
         self.env.update(TALKEY_TRANSLATE_PREVIEW_MS='100', TALKEY_TRANSLATE_STREAM='0')
         self.listen()

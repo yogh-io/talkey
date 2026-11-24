@@ -1,6 +1,7 @@
 # Live translation into a virtual microphone. Callbacks are fenced by the run directory.
-TRANSLATE_SINK=talkey_translate
-TRANSLATE_MIC=talkey_translate_mic
+# Other names let a second, private instance run beside yours, for example in tests.
+TRANSLATE_SINK="${TALKEY_TRANSLATE_SINK:-talkey_translate}"
+TRANSLATE_MIC="${TALKEY_TRANSLATE_MIC:-talkey_translate_mic}"
 translate_load() { TRANSLATE_DIR="$(readlink -f "$STATE_DIR/translate.current" 2>/dev/null)"; [[ -d "$TRANSLATE_DIR" ]]; }
 translate_active() { translate_load && process_alive "$TRANSLATE_DIR/worker.pid"; }
 translate_state() { printf '%s\n' "$1" > "$TRANSLATE_DIR/state"; state_changed; }

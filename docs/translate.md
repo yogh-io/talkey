@@ -351,6 +351,7 @@ after changing them.
 | `TALKEY_TRANSLATE_MAX_S` | `15` | The longest phrase; it is cut here even without a pause |
 | `TALKEY_TRANSLATE_MONITOR` | `0` | `1` also plays the English on your own output; use headphones |
 | `TALKEY_TRANSLATE_RECORD` | `0` | `1` keeps each phrase's audio, see below |
+| `TALKEY_TRANSLATE_SINK`, `TALKEY_TRANSLATE_MIC` | `talkey_translate`, `talkey_translate_mic` | The sink and microphone the English goes to. Other names run a second, private instance beside yours, for example to test |
 | `TALKEY_TRANSLATE_CAMERA` | `1` | Start the talkey camera with translation when it exists; `0` leaves it to `talkey camera start` |
 | `TALKEY_CAMERA_INPUT` | your first webcam | The webcam the talkey camera shows, like `/dev/video0` |
 | `TALKEY_CAMERA_SIZE` | `1280x720` | Size of the talkey camera; the webcam is scaled and cropped to fill it |
