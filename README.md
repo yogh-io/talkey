@@ -107,8 +107,10 @@ be running. Setup does not download or install anything automatically.
 
 The detector searches `~/.local/share/whisper`, the local whisper.cpp checkout's
 `models` directory, and `/usr/share/whisper.cpp-model-silero-v5.1.2` for the model.
-Set `TALKEY_VAD_MODEL` or `TALKEY_WHISPER_LIB` for other locations. Auto capture
-uses 16 kHz mono regardless of the manual recording format. Useful settings:
+Set `TALKEY_VAD_MODEL` or `TALKEY_WHISPER_LIB` for other locations. Auto mode
+detects speech on 16 kHz mono. Its takes are mono at `TALKEY_SAMPLE_RATE` when
+that is 32 or 48 kHz, and 16 kHz otherwise; one ffmpeg process produces both
+streams. Useful settings:
 
 | Setting | Default | Meaning |
 |---|---|---|

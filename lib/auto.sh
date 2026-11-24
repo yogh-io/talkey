@@ -2,6 +2,10 @@
 auto_load() { AUTO_DIR="$(readlink -f "$STATE_DIR/auto.current" 2>/dev/null)"; [[ -d "$AUTO_DIR" ]]; }
 auto_active() { auto_load && process_alive "$AUTO_DIR/worker.pid"; }
 auto_state() { printf '%s\n' "$1" > "$AUTO_DIR/state"; state_changed; }
+# Silero needs 16 kHz. A take keeps the configured rate when that is 32 or 48 kHz.
+auto_rate() {
+  case "$CONFIGURED_SAMPLE_RATE" in 32000|48000) printf '%s' "$CONFIGURED_SAMPLE_RATE" ;; *) printf 16000 ;; esac
+}
 
 # This preference survives listener restarts and logins. Manual
 # dictation still uses TALKEY_SUBMIT, and triangle remains a per-phrase override.
@@ -47,7 +51,7 @@ auto_start() {
   local python="${TALKEY_AUTO_PYTHON:-python3}"
   command -v "$python" >/dev/null || { echo "talkey auto: Python not found: $python" >&2; return 1; }
   # Validate the model and detector before interrupting a manual recording.
-  if ! "$python" "$SCRIPT_DIR/talkey-auto-worker" --check; then
+  if ! TALKEY_AUTO_RATE="$(auto_rate)" "$python" "$SCRIPT_DIR/talkey-auto-worker" --check; then
     notify 'auto mode unavailable - run: talkey-setup vad / talkey-setup turn' 5000
     return 1
   fi
@@ -63,7 +67,7 @@ auto_start() {
   auto_state starting
   TALKEY_STATE_DIR="$STATE_DIR" TALKEY_DATA_DIR="$DATA_DIR" TALKEY_AUTO_RUN="$AUTO_DIR" TALKEY_LANG="$LANG_CODE" \
   TALKEY_FFMPEG="$FFMPEG" TALKEY_SOURCE="$AUDIO_SOURCE" TALKEY_MAX_REC_S="$MAX_REC_S" \
-  TALKEY_WHISPER_URL="$WHISPER_URL" \
+  TALKEY_WHISPER_URL="$WHISPER_URL" TALKEY_AUTO_RATE="$(auto_rate)" \
     "$python" "$SCRIPT_DIR/talkey-auto-worker" 9>&- </dev/null >>"$STATE_DIR/log" 2>&1 &
   process_save "$!" "$AUTO_DIR/worker.pid" || { auto_state error; return 1; }
   play_sound auto-on
@@ -146,7 +150,7 @@ auto_event() {
     begin)
       session_load dictate || true
       dictation_active && return 1
-      SAMPLE_RATE=16000; CHANNELS=1; BYTES_PER_SECOND=32000
+      SAMPLE_RATE="${TALKEY_AUTO_RATE:-16000}"; CHANNELS=1; BYTES_PER_SECOND=$(( SAMPLE_RATE * 2 ))
       session_new
       printf '%s\n' "$AUTO_DIR" > "$TAKE_DIR/auto.owner"
       printf '%s\n' "$EVENT_MS" > "$PRESSTIME"

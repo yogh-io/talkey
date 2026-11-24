@@ -61,7 +61,10 @@ skipped if focus no longer matches the captured target.
 Auto mode selects a unique run directory through `auto.current`. Internal
 `_auto` callbacks must match that run and its live worker identity. One worker
 captures 16 kHz PCM into a bounded queue while finalization uses the existing
-controller. An auto take's recorder PID identifies the listener for live preview;
+controller. At 32 or 48 kHz, the same ffmpeg writes a second stream to a pipe;
+each 16 kHz frame is paired with its full-rate audio, so detection, Smart Turn
+and the end cue are unchanged while the take keeps the full rate. The rate is
+fixed when the worker starts and reaches `_auto begin` through its environment. An auto take's recorder PID identifies the listener for live preview;
 `record_stop` removes this take's marker without stopping continuous capture.
 Only auto-mode shutdown stops that worker. Stopping invalidates the run before
 signalling it and cancels an in-flight take under the command lock. Endpoint

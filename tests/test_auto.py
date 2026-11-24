@@ -122,6 +122,35 @@ os.execv({sys.executable!r}, [{sys.executable!r}]+sys.argv[1:])
         self.mute.touch()
         self.wait_for(lambda: self.status()['state'] == 'listening')
 
+    def converted_rate(self, take):
+        """Rate the finished take was converted to WAV with, for whisper and the archive."""
+        self.wait_for(lambda: any((self.root/'archive').glob('*.wav')))
+        for line in (self.root/'ffmpeg-args').read_text().splitlines():
+            args = json.loads(line)
+            if args[args.index('-i') + 1] == str(take/'dictate.raw'):
+                return int(args[args.index('-ar') + 1])
+        self.fail('take was not converted')
+
+    def test_takes_keep_48_khz_while_detection_uses_16_khz(self):
+        self.env['TALKEY_SAMPLE_RATE'] = '48000'
+        self.listen()
+        take = self.speak()
+        self.end_phrase()
+        self.assertEqual(self.converted_rate(take), 48000)
+        audio = next((self.root/'archive').glob('*.wav')).read_bytes()
+        # The fake marks the full-rate output with 2s; the 16 kHz detector copy has 1s.
+        self.assertIn(b'\2', audio)
+        self.assertNotIn(b'\1', audio)
+        self.assertEqual(len(audio) % (3 * 1024), 0)
+        self.assertEqual(sum(k[0] == 'type' for k in self.keys()), 1)
+
+    def test_rates_that_are_not_a_multiple_of_16_khz_keep_16_khz_takes(self):
+        self.env['TALKEY_SAMPLE_RATE'] = '44100'
+        self.listen()
+        take = self.speak()
+        self.end_phrase()
+        self.assertEqual(self.converted_rate(take), 16000)
+
     def smart_listen(self, minimum='320', maximum='2000'):
         self.env.update(TALKEY_SMART_TURN='1', TALKEY_TURN_MIN_SILENCE_MS=minimum,
                         TALKEY_TURN_MAX_SILENCE_MS=maximum)

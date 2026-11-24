@@ -217,6 +217,9 @@ class Listener:
         self.capture_error = None
         self.overflow = False
         self.capture = None
+        # Detection always runs on 16 kHz. Takes keep the configured rate for archives.
+        self.ratio = int(setting('AUTO_RATE', '16000', 16000, 48000)) // 16000
+        self.full = None
         self.take = self.output = None
         self.stopping = threading.Event()
 
@@ -251,10 +254,11 @@ class Listener:
         try:
             while not self.stopping.is_set():
                 frame = self.capture.stdout.read(FRAME_BYTES)
-                if len(frame) != FRAME_BYTES:
+                full = self.full.read(FRAME_BYTES * self.ratio) if self.full else frame
+                if len(frame) != FRAME_BYTES or len(full) != FRAME_BYTES * self.ratio:
                     raise RuntimeError('microphone stream ended')
                 try:
-                    self.frames.put_nowait(frame)
+                    self.frames.put_nowait((frame, full))
                 except queue.Full as error:
                     self.overflow = True
                     raise RuntimeError('transcription fell over 120 seconds behind capture') from error
@@ -344,10 +348,18 @@ class Listener:
             if time.monotonic() > deadline:
                 raise RuntimeError('listener identity was not published')
             time.sleep(.01)
-        self.capture = subprocess.Popen([
+        command = [
             os.environ.get('TALKEY_FFMPEG', 'ffmpeg'), '-nostdin', '-hide_banner', '-loglevel', 'error',
             '-f', 'pulse', '-i', os.environ.get('TALKEY_SOURCE', 'default'),
-            '-ac', '1', '-ar', '16000', '-f', 's16le', '-'], stdout=subprocess.PIPE)
+            '-ac', '1', '-ar', '16000', '-f', 's16le', '-']
+        if self.ratio > 1:
+            read, write = os.pipe()
+            command += ['-ac', '1', '-ar', str(16000 * self.ratio), '-f', 's16le', f'pipe:{write}']
+            self.capture = subprocess.Popen(command, stdout=subprocess.PIPE, pass_fds=(write,))
+            os.close(write)
+            self.full = os.fdopen(read, 'rb')
+        else:
+            self.capture = subprocess.Popen(command, stdout=subprocess.PIPE)
         threading.Thread(target=self.read_audio, daemon=True).start()
         self.state('listening')
         last_frame = time.monotonic()
@@ -361,7 +373,7 @@ class Listener:
                 self.turn_decision('manual')
                 self.finish()
             try:
-                frame = self.frames.get(timeout=.032)
+                frame, full = self.frames.get(timeout=.032)
                 last_frame = time.monotonic()
             except queue.Empty:
                 if self.capture_error:
@@ -372,7 +384,7 @@ class Listener:
                 # zeros. Treat a stalled stream as silence after a short grace.
                 if time.monotonic() - last_frame < .25 or not self.output:
                     continue
-                frame = bytes(FRAME_BYTES)
+                frame, full = bytes(FRAME_BYTES), bytes(FRAME_BYTES * self.ratio)
             if self.overflow:
                 # Overflow means audio was lost; keep the take, never auto-send it.
                 raise self.capture_error
@@ -386,21 +398,21 @@ class Listener:
             capped = self.endpoint.active and self.endpoint.length + 1 >= self.endpoint.max_frames
             event = self.endpoint.update(speech)
             if self.output:
-                self.output.write(frame)
+                self.output.write(full)
                 if self.cue:
                     self.cue_audio.append(frame)
                 if self.turn:
                     self.turn_audio.append(frame)
             else:
-                self.preroll.append(frame)
+                self.preroll.append((frame, full))
             if event == 'start':
                 self.take = Path(self.call('begin'))
                 self.output = (self.take / 'dictate.raw').open('ab', buffering=0)
-                self.output.write(b''.join(self.preroll))
+                self.output.write(b''.join(full for _, full in self.preroll))
                 if self.turn:
-                    self.turn_audio.extend(self.preroll)
+                    self.turn_audio.extend(frame for frame, _ in self.preroll)
                 if self.cue:
-                    self.cue_audio.extend(self.preroll)
+                    self.cue_audio.extend(frame for frame, _ in self.preroll)
                 self.preroll.clear()
                 self.state('speaking')
             elif event == 'end':
@@ -428,6 +440,8 @@ class Listener:
                 self.capture.kill()
                 self.capture.wait()
             self.capture.stdout.close()
+        if self.full:
+            self.full.close()
 
 
 def load_turn():
@@ -467,6 +481,8 @@ def main():
         setting('MAX_REC_S', '900', 1, 86400)
         setting('AUTO_IDLE_S', '120', 0, 86400)
         setting('END_PHRASE_SILENCE_MS', '600', 160, 10000)
+        if int(setting('AUTO_RATE', '16000', 16000, 48000)) % 16000:
+            raise ValueError('TALKEY_AUTO_RATE must be 16000, 32000 or 48000')
         phrase = os.environ.get('TALKEY_END_PHRASE', '').strip()
         if phrase and strip_end_cue(phrase, phrase) is None:
             raise ValueError('TALKEY_END_PHRASE must contain words')

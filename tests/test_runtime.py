@@ -16,9 +16,15 @@ args=sys.argv[1:]
 if name=='ffmpeg':
     if 'pulse' in args:
         signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+        rates=[int(args[i+1]) for i,a in enumerate(args) if a=='-ar']
+        extra=[(os.fdopen(int(a[5:]),'wb'),rates[1]//rates[0]) for a in args if a.startswith('pipe:')]
         while True:
-            sys.stdout.buffer.write(b'\0\1'*1600); sys.stdout.buffer.flush(); time.sleep(.03)
+            chunk=b'\0\1'*1600
+            sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush()
+            for out,ratio in extra: out.write(chunk.replace(b'\1',b'\2')*ratio); out.flush()
+            time.sleep(.03)
     else:
+        with (root/'ffmpeg-args').open('a') as f: f.write(json.dumps(args)+'\n')
         if (root/'fail-wrap').exists(): sys.exit(1)
         pathlib.Path(args[-1]).write_bytes(pathlib.Path(args[args.index('-i')+1]).read_bytes())
 elif name=='curl':
