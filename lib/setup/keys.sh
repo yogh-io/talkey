@@ -110,7 +110,7 @@ step_keys() {
   local -A prompt=(
     [dictate]="dictate - hold to talk"
     [submit]="submit - send / Enter, double-tap toggles auto Enter"
-    [memo]="memo - translate toggle, double-tap restart, hold for a memo"
+    [memo]="memo - double-tap restarts a dictation, hold for a memo"
     [dictate_alt]="dictate in a second language (optional)"
   )
   local got

@@ -22,7 +22,6 @@ pkgbase = talkey-git
 	depends = jq
 	depends = xorg-xev
 	optdepends = whisper.cpp-model-large-v3-turbo: the default speech model (AUR) - talkey needs some model
-	optdepends = whisper.cpp-model-small: translate-to-English support (AUR)
 	optdepends = python: automatic speech detection, voice commands and live text in the HUD
 	optdepends = python-numpy: optional Smart Turn feature extraction
 	optdepends = python-onnxruntime: optional Smart Turn CPU inference

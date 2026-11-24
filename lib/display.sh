@@ -4,7 +4,7 @@ overlay_metrics() {
   local alp sil peak
   read -r alp sil peak < "$STT_METRICS" 2>/dev/null || true
   if [[ -z "${alp:-}" && -z "${sil:-}" ]]; then : > "$METRICS_FILE"; return 0; fi
-  # "none" is the no-confidence sentinel (translate path, or no jq). It must be a
+  # "none" is the no-confidence sentinel (no jq, or no segments). It must be a
   # real field: an empty one would shift silence and peak left into the wrong
   # variables, and exp() of a percentage renders a nonsense confidence.
   [[ "$alp" == none ]] && alp=""

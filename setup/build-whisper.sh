@@ -45,15 +45,15 @@ fi
 
 echo ">> configuring"
 cmake -B build "${cmake_flags[@]}"
-echo ">> building whisper-server + whisper-cli"
-cmake --build build -j --config Release --target whisper-server whisper-cli
+echo ">> building whisper-server"
+cmake --build build -j --config Release --target whisper-server
 
 # talkey-setup asks which model you want, so setup/install.sh sets this to keep
 # the answer in one place instead of quietly fetching 1.6GB of a different one.
 if [[ "${WHISPER_SKIP_MODEL:-0}" == "1" ]]; then
   echo ">> skipping the model - talkey-setup handles that"
   echo ">> done (binaries only)"
-  find "$OPT_DIR/build" -name 'whisper-server' -o -name 'whisper-cli' | sed 's/^/  /'
+  find "$OPT_DIR/build" -name 'whisper-server' | sed 's/^/  /'
   exit 0
 fi
 
@@ -62,18 +62,7 @@ if [[ ! -f "$MODEL_DIR/ggml-$MODEL.bin" ]]; then
   bash "$OPT_DIR/models/download-ggml-model.sh" "$MODEL" "$MODEL_DIR"
 fi
 
-# Translate model. The Square mid-dictation translate needs a model that keeps
-# whisper's translate task - large-v3-turbo dropped it (it re-transcribes in the
-# source language). The small MULTILINGUAL model (not small.en) keeps it and is
-# cheap (~466MB). Fetch it unless the main model already is small.
-TRANSLATE_MODEL="${WHISPER_TRANSLATE_MODEL:-small}"
-if [[ "$MODEL" != "$TRANSLATE_MODEL" && ! -f "$MODEL_DIR/ggml-$TRANSLATE_MODEL.bin" ]]; then
-  echo ">> downloading translate model: $TRANSLATE_MODEL"
-  bash "$OPT_DIR/models/download-ggml-model.sh" "$TRANSLATE_MODEL" "$MODEL_DIR"
-fi
-
 echo ">> done"
 echo "binaries:"
-find "$OPT_DIR/build" -name 'whisper-server' -o -name 'whisper-cli' | sed 's/^/  /'
-echo "model:           $MODEL_DIR/ggml-$MODEL.bin"
-echo "translate model: $MODEL_DIR/ggml-$TRANSLATE_MODEL.bin"
+find "$OPT_DIR/build" -name 'whisper-server' | sed 's/^/  /'
+echo "model: $MODEL_DIR/ggml-$MODEL.bin"

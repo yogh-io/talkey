@@ -35,7 +35,7 @@
 "talkey dictate-alt release"
   Release + c:191
 
-# --- memo, translate toggle, double-tap to restart ---
+# --- memo, double-tap to restart ---
 "talkey memo press"
   c:193
 

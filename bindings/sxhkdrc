@@ -36,7 +36,7 @@ XF86Tools
 @XF86Tools
     talkey dictate-alt release
 
-# --- memo, translate toggle, double-tap to restart ---
+# --- memo, double-tap to restart ---
 XF86Launch6
     talkey memo press
 @XF86Launch6

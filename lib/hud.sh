@@ -121,7 +121,7 @@ emit() {
     send)           footertext="⏎ will send";                     footerkind=send ;;
     cancel)         footertext="✖ will cancel";                   footerkind=cancel ;;
     restart_armed)  footertext="$L_MEMO tap again to restart";     footerkind=restart ;;
-    *)              footertext="tap $L_SUBMIT send  ·  $L_MEMO translates";  footerkind=plain ;;
+    *)              footertext="tap $L_SUBMIT send  ·  $L_MEMO twice restarts";  footerkind=plain ;;
   esac
   if [[ -f "$take/auto.owner" ]]; then
     if [[ "$footerkind" == plain ]]; then footertext="tap $L_SUBMIT send"; fi
@@ -133,7 +133,6 @@ emit() {
   if [[ -f "$STATE_DIR/dictate.pid" ]] && (( now - tap < ${TALKEY_DOUBLE_TAP_MS:-400} )); then
     footertext="$L_MEMO tap again to restart"; footerkind=restart
   fi
-  if [[ -f "$take/translate.requested" ]]; then headertext+=" → EN"; fi
   if (( secs > ${TALKEY_MAX_PUMP_S:-60} )); then footertext="live preview paused · $footertext"; fi
   (( long )) && timetext="${secs}s ⚠ long" || timetext="${secs}s"
 

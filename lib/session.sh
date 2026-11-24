@@ -19,7 +19,7 @@ session_paths() {
   PRESSTIME="$TAKE_DIR/dictate.presstime"; MEMO_PRESSTIME="$TAKE_DIR/memo.presstime"
   PENDING="$TAKE_DIR/dictate.pending"
   SUBMIT_REQ="$TAKE_DIR/submit.requested"; CANCEL_REQ="$TAKE_DIR/cancel.requested"
-  TRANSLATE_REQ="$TAKE_DIR/translate.requested"; TARGET_WIN="$TAKE_DIR/dictate.target_win"
+  TARGET_WIN="$TAKE_DIR/dictate.target_win"
   DIAG="$TAKE_DIR/live.diag"
 }
 
@@ -170,7 +170,7 @@ migrate_finished_legacy() {
   if [[ "$MODE" == dictate ]]; then
     paths+=("$PRESSTIME" "$PENDING" "$PENDING.start" "$TRANSCRIPT" "$FINAL_TEXT"
             "$HEADER_FILE" "$FOOTER_FILE" "$METRICS_FILE" "$STT_METRICS"
-            "$MEMO_PRESSTIME" "$SUBMIT_REQ" "$CANCEL_REQ" "$TRANSLATE_REQ" "$TARGET_WIN" "$DIAG")
+            "$MEMO_PRESSTIME" "$SUBMIT_REQ" "$CANCEL_REQ" "$TARGET_WIN" "$DIAG")
   fi
   mkdir -p "$STATE_DIR/takes"
   saved="$(mktemp -d "$STATE_DIR/takes/legacy.XXXXXXXX")"

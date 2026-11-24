@@ -11,7 +11,7 @@
 ;; bare/relative name, so the launcher (talkey-hud) exports TALKEY_EWW_DIR and we
 ;; reference it here. Fields: header, transcript, level (0..100), zone, readout, dbfs.
 (deflisten hud
-  :initial '{"header":"listening","headertext":"LISTENING","transcript":"","timetext":"0s","long":false,"footertext":"tap submit send  ·  memo translates","footerkind":"plain","metricstext":"","pzone":"","level":0,"zone":"silence","meterpath":"blank.svg"}'
+  :initial '{"header":"listening","headertext":"LISTENING","transcript":"","timetext":"0s","long":false,"footertext":"tap submit send  ·  memo twice restarts","footerkind":"plain","metricstext":"","pzone":"","level":0,"zone":"silence","meterpath":"blank.svg"}'
   "$TALKEY_EWW_DIR/eww-feed")
 
 ;; Studio-console layout. Header (state + elapsed), transcript hero, the level in
@@ -86,7 +86,7 @@
       (label :class "help-what" :halign "start" :text "tap = send/cancel/plain  ·  double-tap = auto Enter"))
     (box :class "help-row" :orientation "horizontal" :space-evenly false
       (label :class "help-key key-memo" :halign "start" :text {help.memo})
-      (label :class "help-what" :halign "start" :text "tap = translate  ·  double-tap = restart  ·  else memo"))
+      (label :class "help-what" :halign "start" :text "double-tap = restart  ·  else memo"))
     (label :class "help-note" :halign "start" :xalign 0
            :text "hold to talk, tap to toggle, or double-tap to toggle auto listening.
 in auto: tap during speech to finish the phrase; tap while waiting to exit.

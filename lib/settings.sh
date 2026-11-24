@@ -1,7 +1,5 @@
 # Recorder defaults. User-facing explanations live in config/talkey.env.example.
 WHISPER_URL="$(talkey_whisper_url)"
-WHISPER_CLI="$(talkey_binary whisper-cli "${TALKEY_WHISPER_CLI:-}" || true)"
-TRANSLATE_MODEL="$(talkey_model_path small "${TALKEY_TRANSLATE_MODEL:-}" || true)"
 AUDIO_SOURCE="${TALKEY_SOURCE:-default}"
 TYPE_DELAY="${TALKEY_TYPE_DELAY:-8}"
 TYPE_MAX_MS="${TALKEY_TYPE_MAX_MS:-2000}"

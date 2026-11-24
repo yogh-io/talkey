@@ -2,12 +2,10 @@
 # model
 # ===========================================================================
 # Sizes are the real download, not the parameter count. The tradeoff that
-# matters: turbo is much better on accented or disfluent speech but wants a GPU,
-# and it dropped whisper's translate task, which only the small multilingual
-# model still has.
+# matters: turbo is much better on accented or disfluent speech but wants a GPU.
 MODELS=(
   "large-v3-turbo|1.6 GB|best accuracy, multilingual. Slow on CPU - wants a GPU"
-  "small|466 MB|decent, multilingual, and the only one here that can translate"
+  "small|466 MB|decent, multilingual, fine on CPU"
   "small.en|466 MB|English only, comfortable on CPU"
   "base.en|142 MB|English only, fastest, noticeably rougher"
 )

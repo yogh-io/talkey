@@ -64,14 +64,10 @@ Auto mode switches off after two minutes without speech, with the off sound.
 Set `TALKEY_AUTO_IDLE_S` to change this timeout, or `0` to disable it. An unfinished
 phrase or final transcription is allowed to finish before the idle timeout acts.
 
-**Memo / translate** - on its own, hold to record and release to play the clip
-straight back, so you can hear whether that came out right. During a dictation
-the same key toggles **translate to English** for the clip: dictate in whatever
-language you speak, tap it, and English lands in your window. whisper's
-translate task only ever outputs English, so this is *your language* to English
-and not the reverse - a limit of the model, not a setting. Tap it
-twice quickly during a dictation and it **restarts** instead: the take so far is
-thrown away and recording begins again, without letting go of the dictate key.
+**Memo** - on its own, hold to record and release to play the clip straight
+back, so you can hear whether that came out right. Tap it twice quickly during a
+dictation and it **restarts**: the take so far is thrown away and recording
+begins again, without letting go of the dictate key.
 
 **Submit / cancel** - on its own, taps Enter. During a dictation each tap cycles
 what will happen when you finish: send (type, then Enter) → cancel (throw it
@@ -90,8 +86,8 @@ In auto mode, submit (triangle) uses that same cycle. While waiting for speech,
 it arms the next phrase instead of immediately pressing Enter. During speech or
 final transcription, it changes the current phrase. Each phrase then resets to
 the auto-mode Enter preference (initially `TALKEY_SUBMIT`, plain typing by default).
-Memo/translate gestures during an auto
-phrase are ignored; use manual dictation for translation or restarting a take.
+Memo gestures during an auto
+phrase are ignored; use manual dictation to restart a take.
 
 **Help** - a cheat sheet of your own bindings, in a floating window.
 
@@ -397,7 +393,6 @@ leaving it to you.
 | Sound | a PulseAudio-compatible server: PulseAudio itself, or PipeWire with `pipewire-pulse`. Recording is `ffmpeg -f pulse`, playback is `paplay`. |
 | A speech model | `whisper.cpp-model-large-v3-turbo` (default), or any ggml model |
 | Live text in the HUD as you speak | `python` - without it the HUD still shows state and the meter |
-| Translate key | `whisper.cpp-model-small` - turbo dropped whisper's translate task |
 | Key bindings | your window manager, or `sxhkd` / `xbindkeys` |
 | Notifications | `libnotify` - the only feedback if you skip the HUD |
 | Paste mode | `xclip` |

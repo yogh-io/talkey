@@ -121,7 +121,7 @@ finish_dictation() {
     if archive_audio "$text"; then archived=1; else notify "archive failed; audio kept at $RAW" 5000; fi
   fi
   if (( archived )); then rm -f "$RAW"; fi
-  rm -f "$PRESSTIME" "$TRANSLATE_REQ" "$MEMO_PRESSTIME" "$SUBMIT_REQ" "$CANCEL_REQ"
+  rm -f "$PRESSTIME" "$MEMO_PRESSTIME" "$SUBMIT_REQ" "$CANCEL_REQ"
   diag "finished status=$result"
   (( result != 1 ))
 }
@@ -145,8 +145,6 @@ square_mid_dictation() {
   [[ ! -s "$MEMO_PRESSTIME" ]] || last="$(cat "$MEMO_PRESSTIME")"
   if (( EVENT_MS - last <= DOUBLE_TAP_MS )); then restart_dictation; return; fi
   printf '%s\n' "$EVENT_MS" > "$MEMO_PRESSTIME"
-  if [[ -f "$TRANSLATE_REQ" ]]; then rm -f "$TRANSLATE_REQ"; notify 'translate off'
-  else : > "$TRANSLATE_REQ"; notify '→ English'; fi
   overlay_footer "$(current_submit_footer)"
 }
 
