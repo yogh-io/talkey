@@ -23,6 +23,7 @@ runs a background Python capture/VAD worker.
 | `bin/talkey-auto-worker`, `lib/auto.sh` | Continuous capture, Silero VAD, endpoint detection, ordered delivery and external status |
 | `bin/talkey-translate-worker`, `lib/translate.sh` | Live translation: capture, recognition, Ollama translation, Pocket TTS and the virtual microphone |
 | `lib/vad.py` | Silero VAD through whisper.cpp and audio-time endpoints, shared by both workers |
+| `lib/stretch.py` | Changes the pace of the translated voice without changing its pitch (WSOLA), as it streams |
 | `lib/smart_turn.py`, `lib/vendor/` | Optional CPU ONNX completion inference and pinned Whisper feature extraction |
 | `lib/hud.sh`, `integrations/eww/` | Presentation, meter rendering and window lifecycle |
 | `lib/install.sh`, `setup/`, `packaging/aur/` | Unit rendering, checkout setup, build and packaging |

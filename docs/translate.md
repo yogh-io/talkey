@@ -279,6 +279,7 @@ after changing them.
 | `TALKEY_TRANSLATE_URL` | `http://127.0.0.1:11434/api/chat` | Ollama's chat endpoint |
 | `TALKEY_TRANSLATE_TTS` | `english` | The Pocket TTS model |
 | `TALKEY_TRANSLATE_TEMP` | Pocket's `0.3` | Voice temperature; `0.45` sounded most like the speaker |
+| `TALKEY_TRANSLATE_SPEED` | `0.95` | Pace of the voice, without changing its pitch; below 1 is slower and gives the next piece more time to arrive. `1` keeps Pocket's own pace |
 | `TALKEY_TRANSLATE_STREAM` | `1` | Speak settled English before you pause; `0` waits for the pause |
 | `TALKEY_TRANSLATE_PREVIEW_MS` | `250` | How often the phrase so far is transcribed and translated |
 | `TALKEY_TRANSLATE_TICK` | `1` | Tick softly while the voice waits for the rest of a sentence; `0` stays silent |

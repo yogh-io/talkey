@@ -239,6 +239,8 @@ class Voice:
     A piece after the first is generated with the previous piece's text and its generated frames
     forced in front, so it carries on instead of starting a new sentence. A piece that is not
     the last loses its end-of-speech tail, which would otherwise sound like a sentence ending.
+    Each piece is slowed down a little without changing its pitch, which gives the next piece time
+    to arrive before the voice runs out.
     """
     TAIL_FRAMES = 3
     # Leading silence below this level is skipped, keeping a little before the voice begins.
@@ -250,6 +252,7 @@ class Voice:
         import torch
         from pocket_tts import TTSModel
         from pocket_tts.models.text_chunking import prepare_text_prompt, split_into_best_sentences
+        from stretch import Stretch
         self.torch, self.prepare, self.split = torch, prepare_text_prompt, split_into_best_sentences
         if 'forced_latents' not in inspect.signature(TTSModel._generate_audio_stream_short_text).parameters:
             raise ValueError('this Pocket TTS cannot continue an utterance; run: talkey-setup translate')
@@ -260,6 +263,7 @@ class Voice:
         self.state = self.model.get_state_for_audio_prompt(path)
         self.sample_rate = self.model.sample_rate
         self.frame_samples = round(self.sample_rate / self.model.mimi.frame_rate)
+        self.stretch = Stretch(setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5), self.sample_rate)
         self.previous = None
 
     def stream(self, text, last=True):
@@ -293,8 +297,11 @@ class Voice:
             # The tail is only known to be unwanted once the piece turns out not to be the last.
             ready = len(held) if last else len(held) - tail
             if ready > 0:
-                yield held[:ready]
+                if pcm := self.stretch.push(held[:ready]):
+                    yield pcm
                 held = held[ready:]
+        if pcm := self.stretch.flush():
+            yield pcm
         frames = self.torch.cat(latents, 1) if latents else None
         if last or frames is None or frames.shape[1] <= self.TAIL_FRAMES + 4:
             self.previous = None
@@ -657,6 +664,7 @@ def main():
         setting('TRANSLATE_MAX_S', '15', 1, 600)
         setting('TRANSLATE_QUICK_SILENCE_MS', '250', 64, 10000)
         setting('TRANSLATE_QUICK_AFTER_S', '4', 0, 600)
+        setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5)
         for name in ('STREAM', 'TICK', 'RECORD'):
             if os.environ.get(f'TALKEY_TRANSLATE_{name}', '1') not in ('0', '1'):
                 raise ValueError(f'TALKEY_TRANSLATE_{name} must be 0 or 1')
