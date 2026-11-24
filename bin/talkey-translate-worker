@@ -498,7 +498,7 @@ class Interpreter:
         self.speed = setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5)
         self.speed_min = setting('TRANSLATE_SPEED_MIN', '0.85', 0.5, 1.5)
         self.speed_max = setting('TRANSLATE_SPEED_MAX', '1.15', 0.5, 1.5)
-        self.dry_guard = setting('TRANSLATE_GUARD', '1', 0, 10)
+        self.dry_guard = setting('TRANSLATE_GUARD', '0.5', 0, 10)
         # Measured as the session goes: seconds from a piece being handed to the voice until the
         # next one is settled (starting from a guess), the voice's time to its first audio, and the
         # time between previews.
@@ -969,7 +969,7 @@ def main():
         speed = setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5)
         if not setting('TRANSLATE_SPEED_MIN', '0.85', 0.5, 1.5) <= speed <= setting('TRANSLATE_SPEED_MAX', '1.15', 0.5, 1.5):
             raise ValueError('TALKEY_TRANSLATE_SPEED must be between TALKEY_TRANSLATE_SPEED_MIN and _MAX')
-        setting('TRANSLATE_GUARD', '1', 0, 10)
+        setting('TRANSLATE_GUARD', '0.5', 0, 10)
         setting('TRANSLATE_END_P', '0.2', 0.01, 1)
         setting('TRANSLATE_WORD_P', '0.5', 0, 1)
         for name in ('STREAM', 'TICK', 'RECORD', 'TRACE'):

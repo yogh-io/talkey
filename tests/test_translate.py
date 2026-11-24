@@ -305,7 +305,7 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(self.phrase.segments.get()[0]['text'], 'Hello everyone, welcome to the meeting,')
 
     def test_a_piece_is_held_while_the_voice_would_run_dry_before_more_is_settled(self):
-        self.interpreter.refill.extend([5.0] * 20)
+        self.interpreter.refill.extend([60.0] * 20)
         self.say('Hallo allemaal', 'Hallo allemaal ik deel')
         self.assertEqual(self.phrase.agreement.decision['result'], 'would-run-dry')
         self.assertTrue(self.phrase.segments.empty())

@@ -336,7 +336,7 @@ come out wrong. Tell it, before or during a call:
   For example: `Weekly planning with the design team. Names: Anna, Bram. Keep "sprint" in English.`
 - **Live context** in `$XDG_RUNTIME_DIR/talkey/translate.context`: any program
   may write or append to this file while translation runs, for example the
-  agenda item or what was asked. Its newest part is used. It is removed when
+  agenda item you are on. Its newest part is used. It is removed when
   translation starts.
 
 Both are read again when you start a new phrase, so a change applies from your
@@ -346,12 +346,13 @@ takes room in the model's prompt and costs a little time per translation.
 
 ## What to expect
 
-- **Delay.** The English usually starts 3 to 4 seconds after you start a
-  sentence, often before you finish it. talkey waits until it has enough settled
-  English that the voice will not stop in the middle of a sentence. It cannot
-  start much earlier without speaking guesses or short fragments:
-  `TALKEY_TRANSLATE_GUARD=0` starts about a second earlier, with more and longer
-  pauses.
+- **Delay.** The English usually starts about 3 seconds after you start a
+  sentence, often before you finish it. talkey waits until it has some settled
+  English, so the voice rarely stops right after a fragment. It cannot start much
+  earlier without speaking guesses or short fragments.
+  `TALKEY_TRANSLATE_GUARD=1` waits for more: the English starts about a second
+  later and breaks off mid-sentence less often. `0` starts as soon as anything is
+  settled, with more and longer pauses.
 - **Pauses in the English.** Most sentences flow without a break. When the rest
   of a sentence is not settled yet, the voice waits, usually for less than a
   second and a half, with a soft tick so listeners know you are still talking.
@@ -381,7 +382,7 @@ after changing them.
 | `TALKEY_TRANSLATE_TEMP` | Pocket's `0.3` | Voice temperature; `0.45` sounded most like the speaker |
 | `TALKEY_TRANSLATE_SPEED` | `0.95` | The usual pace of the voice, without changing its pitch; below 1 is slower. `1` keeps Pocket's own pace |
 | `TALKEY_TRANSLATE_SPEED_MIN`, `TALKEY_TRANSLATE_SPEED_MAX` | `0.85`, `1.15` | The slowest pace, used when no more English is coming soon, and the fastest, used when English is waiting. Set both to the usual pace for a fixed pace |
-| `TALKEY_TRANSLATE_GUARD` | `1` | How much English the voice must have in hand before it starts a piece, as a share of the usual wait for the next piece. `0` speaks settled English at once, which starts earlier but leaves more pauses |
+| `TALKEY_TRANSLATE_GUARD` | `0.5` | How much English the voice must have in hand before it starts a piece, as a share of the usual wait for the next piece. `0` speaks settled English at once, which starts earlier but leaves more pauses |
 | `TALKEY_TRANSLATE_END_P` | `0.2` | How sure the model must be that a sentence can end where you are, before that sentence is spoken without waiting for more words. `1` switches this off |
 | `TALKEY_TRANSLATE_WORD_P` | `0.5` | How sure whisper must be of a word for two agreeing transcriptions to be enough; below this, a third must agree. `0` always takes two |
 | `TALKEY_TRANSLATE_STREAM` | `1` | Speak settled English before you pause; `0` waits for the pause |
