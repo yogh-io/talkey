@@ -46,6 +46,8 @@ class HudLifecycleTests(unittest.TestCase):
             (state/'translate.subtitles').write_text(json.dumps({'lines': [
                 {'dutch': 'Ik bel je morgen op.', 'english': 'I will call you tomorrow.', 'live': False},
                 {'dutch': 'Tot', 'english': '', 'live': True}]}))
+            # The worker's latest microphone audio, at about -6 dBFS.
+            (state/'translate.raw').write_bytes((16000).to_bytes(2, 'little', signed=True) * 2048)
             env = dict(os.environ, TALKEY_STATE_DIR=str(state), TALKEY_CONFIG=str(root/'config'),
                        TALKEY_DATA_DIR=str(ROOT), TALKEY_LABEL_MEMO='Square')
             feed = subprocess.Popen([str(ROOT/'integrations/eww/eww-feed')], env=env,
@@ -59,6 +61,8 @@ class HudLifecycleTests(unittest.TestCase):
             self.assertEqual(frame['transcript'].splitlines(),
                              ['» Ik bel je morgen op.', '→ I will call you tomorrow.', '» Tot', '→ …'])
             self.assertEqual(frame['footertext'], 'double-tap Square to stop')
+            self.assertEqual(frame['zone'], 'loud')
+            self.assertGreater(frame['level'], 0)
 
             calls = root/'calls'
             fake = root/'eww'

@@ -264,6 +264,17 @@ class TranslateRuntimeTests(unittest.TestCase):
             {'dutch': 'Ik bel je morgen op.', 'english': 'EN:Ik bel je morgen op.', 'live': False},
             {'dutch': 'Tot dan.', 'english': 'EN:Tot dan.', 'live': False}])
 
+    def test_the_hud_meters_the_microphone_only_while_a_phrase_shows(self):
+        self.listen()
+        self.assertFalse((self.state/'translate.raw').exists())
+        (self.root/'heard').write_text('Hallo.\n')
+        self.mute.unlink()
+        self.wait_for(lambda: (self.state/'translate.raw').exists())
+        self.assertEqual(len((self.state/'translate.raw').read_bytes()), 4 * 1024)
+        self.mute.touch()
+        self.run_key('translate', 'stop')
+        self.assertFalse((self.state/'translate.raw').exists())
+
     def test_dutch_preview_shows_while_speaking(self):
         self.env['TALKEY_TRANSLATE_PREVIEW_MS'] = '100'
         self.listen()

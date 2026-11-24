@@ -61,6 +61,25 @@ build_svg() {
     }' > "$out"
 }
 
+# peak FILE - "dB level zone" of the last ~0.13 s of 16-bit audio in FILE.
+peak() {
+  local pkdb=-99 lvl=0 zone=silence
+  if [[ -s "$1" ]]; then
+    pkdb=$(tail -c 4096 "$1" 2>/dev/null | od -An -td2 -v 2>/dev/null | awk '
+      { for(i=1;i<=NF;i++){ v=$i; a=(v<0)?-v:v; if(a>pk)pk=a; n++ } }
+      END{ if(!n||pk<1){ print -99; exit }
+           printf "%d", int(20*log(pk/32768)/log(10) - 0.5) }')
+  fi
+  [[ "$pkdb" =~ ^-?[0-9]+$ ]] || pkdb=-99
+  if (( pkdb >= FLOOR )); then
+    lvl=$(( (pkdb - FLOOR) * 100 / (0 - FLOOR) )); (( lvl < 0 )) && lvl=0; (( lvl > 100 )) && lvl=100
+    if   (( pkdb < LOW ));  then zone=low
+    elif (( pkdb < LOUD )); then zone=good
+    else                        zone=loud; fi
+  fi
+  printf '%s %s %s' "$pkdb" "$lvl" "$zone"
+}
+
 # rows TEXT EMPTY - the transcript as a fixed number of rows, newest at the bottom.
 rows() {
   printf '%s' "$1" | fold -s -w "${TALKEY_EWW_COLS:-52}" | awk -v L="${TALKEY_EWW_LINES:-4}" -v E="$2" '
@@ -82,16 +101,26 @@ translating() {
 }
 
 emit_translate() {
-  local live text headertext
+  local live text headertext pkdb lvl zone stamp meterpath
+  # The worker refreshes translate.raw while a phrase shows; each refresh is one step of the trace.
+  if [[ "$LAST_TAKE" != translate ]]; then LVL_HIST=(); LAST_TAKE=translate; LAST_SZ=0; fi
+  read -r pkdb lvl zone < <(peak "$LEVEL")
+  stamp="$(stat -Lc%Y.%y "$LEVEL" 2>/dev/null)"
+  if [[ -n "$stamp" && "$stamp" != "$LAST_LEVEL" ]]; then LVL_HIST+=("$pkdb"); LAST_LEVEL="$stamp"; fi
+  (( ${#LVL_HIST[@]} > HIST_N )) && LVL_HIST=("${LVL_HIST[@]: -HIST_N}")
+  TICK=$((TICK + 1)); meterpath="$SVGDIR/m-$TICK.svg"
+  build_svg "$meterpath"
+  rm -f "$SVGDIR/m-$((TICK - 4)).svg" 2>/dev/null
   live="$(jq -r '.lines[-1].live // false' "$SUBS" 2>/dev/null)"
   text="$(jq -r '.lines[] | "» " + (if .dutch == "" then "…" else .dutch end),
                            "→ " + (if .english == "" then "…" else .english end)' "$SUBS" 2>/dev/null)"
   headertext="${TALKEY_TRANSLATE_FROM:-nl} → en"; headertext="${headertext^^}"
   [[ "$live" != true ]] || headertext+=" · HEARING"
   jq -cn --arg ht "$headertext" --arg t "$(rows "$text" "speak…")" --arg ft "double-tap $L_MEMO to stop" \
+     --argjson l "$lvl" --arg z "$zone" --arg mp "$meterpath" \
      '{header:"translating", headertext:$ht, transcript:$t, timetext:"", long:false,
        footertext:$ft, footerkind:"plain", metricstext:"", pzone:"",
-       level:0, zone:"silence", meterpath:"blank.svg"}'
+       level:$l, zone:$z, meterpath:$mp}'
 }
 
 emit() {
@@ -100,19 +129,7 @@ emit() {
   local take; take="$(readlink -f "$STATE_DIR/dictate.current" 2>/dev/null)"
   if [[ "$take" != "$LAST_TAKE" ]]; then LVL_HIST=(); LAST_SZ=0; LAST_TAKE="$take"; fi
   local conf=-1 sil=0 peak=-99 pflag="" footertext footerkind timetext metricstext="" pzone="" pw
-  if [[ -s "$RAW" ]]; then
-    pkdb=$(tail -c 4096 "$RAW" 2>/dev/null | od -An -td2 -v 2>/dev/null | awk '
-      { for(i=1;i<=NF;i++){ v=$i; a=(v<0)?-v:v; if(a>pk)pk=a; n++ } }
-      END{ if(!n||pk<1){ print -99; exit }
-           printf "%d", int(20*log(pk/32768)/log(10) - 0.5) }')
-  fi
-  [[ "$pkdb" =~ ^-?[0-9]+$ ]] || pkdb=-99
-  if (( pkdb >= FLOOR )); then
-    lvl=$(( (pkdb - FLOOR) * 100 / (0 - FLOOR) )); (( lvl < 0 )) && lvl=0; (( lvl > 100 )) && lvl=100
-    if   (( pkdb < LOW ));  then zone=low
-    elif (( pkdb < LOUD )); then zone=good
-    else                        zone=loud; fi
-  fi
+  read -r pkdb lvl zone < <(peak "$RAW")
   # Grow the level trace only when the recording actually grows. Idle (no audio) ->
   # empty trace; file shrank -> a new dictation started, so reset; unchanged (e.g.
   # 'done') -> freeze the last real trace instead of appending a flat tail.

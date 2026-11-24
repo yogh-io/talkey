@@ -571,6 +571,7 @@ class Interpreter:
             self.guard(work)
         self.call('ready')
         audio = phrase = None
+        recent, level = deque(maxlen=4), self.state_dir / 'translate.raw'
         while True:
             if self.error:
                 raise self.error
@@ -578,6 +579,13 @@ class Interpreter:
                 frame = self.frames.get(timeout=.1)
             except queue.Empty:
                 continue
+            recent.append(frame)
+            # The HUD meters the microphone while it shows a phrase; idle, nothing is written.
+            if (self.hearing or self.inflight) and len(recent) == recent.maxlen:
+                tmp = self.state_dir / 'translate.raw.tmp'
+                tmp.write_bytes(b''.join(recent))
+                tmp.replace(level)
+                recent.clear()
             event = self.endpoint.update(self.vad.speech(frame))
             if audio is None:
                 self.preroll.append(frame)
@@ -611,7 +619,8 @@ class Interpreter:
     def close(self):
         self.stopping.set()
         self.previews.shutdown(wait=False, cancel_futures=True)
-        (self.state_dir / 'translate.showing').unlink(missing_ok=True)
+        for name in ('translate.showing', 'translate.raw'):
+            (self.state_dir / name).unlink(missing_ok=True)
         for process in [self.capture] + self.players:
             if process:
                 process.terminate()

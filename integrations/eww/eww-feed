@@ -25,7 +25,7 @@ done
 command -v jq >/dev/null 2>&1 || { echo "eww-feed: jq is required for the HUD" >&2; exit 1; }
 RAW="$STATE_DIR/dictate.raw"; TR="$STATE_DIR/dictate.transcript"
 HD="$STATE_DIR/dictate.header"; FT="$STATE_DIR/dictate.footer"; MET="$STATE_DIR/dictate.metrics"
-SUBS="$STATE_DIR/translate.subtitles"
+SUBS="$STATE_DIR/translate.subtitles"; LEVEL="$STATE_DIR/translate.raw"; LAST_LEVEL=""
 
 # The hints name keys, so they follow the same labels as the cheat sheet - a
 # hardcoded "Square" tells most people to press a key they do not have.

@@ -38,7 +38,7 @@ translate_start() {
   preflight_ok || return 1
   translate_devices || { notify 'translate: could not create the talkey English mic' 5000; return 1; }
   if auto_active; then auto_stop; fi
-  rm -f "$STATE_DIR/translate.showing" "$STATE_DIR/translate.subtitles"
+  rm -f "$STATE_DIR/translate.showing" "$STATE_DIR/translate.subtitles" "$STATE_DIR/translate.raw"
   TRANSLATE_DIR="$(mktemp -d "$STATE_DIR/translate.XXXXXXXX")"
   local link="$STATE_DIR/translate.current.new-$$"
   ln -s "$TRANSLATE_DIR" "$link"; mv -Tf "$link" "$STATE_DIR/translate.current"
@@ -58,7 +58,7 @@ translate_stop() {
   translate_state off
   process_stop "$TRANSLATE_DIR/worker.pid" || return 1
   # A killed worker cannot remove its marker; the HUD would stay open.
-  rm -f "$STATE_DIR/translate.showing"
+  rm -f "$STATE_DIR/translate.showing" "$STATE_DIR/translate.raw"
   translate_state off
   notify 'translate off'
   [[ "$previous" == off ]] || play_sound auto-off

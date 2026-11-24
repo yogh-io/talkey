@@ -34,8 +34,7 @@
     ;; via a gradient) and we just show the image. meterpath is a fresh file each
     ;; tick so the widget reloads; "blank.svg" (relative to this config dir) is the
     ;; placeholder until the first frame arrives.
-    ;; Live translation has no take to meter, so the subtitles go without it.
-    (box :class "hud-well" :hexpand true :halign "fill" :visible {hud.header != "translating"}
+    (box :class "hud-well" :hexpand true :halign "fill"
       (image :class "hud-graph" :path {hud.meterpath} :image-width 616 :image-height 84))
     ;; final reading (conf / silence / peak), once talkey writes it on 'done'. ALWAYS
     ;; present (a space when empty) so its row is reserved and the footer never
