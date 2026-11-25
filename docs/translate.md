@@ -102,12 +102,12 @@ session on an RTX 3070 Ti with 8 GB:
 
 | | whisper | seamless |
 |---|---|---|
-| English starts after you start talking (mean, median) | 3.2 s, 2.4 s | 2.2 s, 2.0 s |
-| Last English after you stop talking | 4.6 s | 3.3 s |
-| Silence between pieces of English, per recording | 1.6 s | 1.9 s |
+| English starts after you start talking (mean, median) | 3.2 s, 2.4 s | 2.2 s, 2.1 s |
+| Last English after you stop talking | 4.6 s | 3.5 s |
+| Silence between pieces of English, per recording | 1.6 s | 1.8 s |
 | Pieces per recording | 5.3 | 7.2 |
 | Ready after you switch translation on | 4 s | 8 s |
-| How close the English is to a reference translation (chrF, higher is closer) | 63 | 61 |
+| How close the English is to a reference translation (chrF, higher is closer) | 63 | 62 |
 
 What else is different with `seamless`:
 
@@ -117,7 +117,7 @@ What else is different with `seamless`:
   other English; talkey does not filter them. Watch the translate window.
 - **The line in your own language is a second reading.** The same model writes
   it from the same audio, apart from the English, so the two can differ. It is
-  less exact than whisper: about 18 words in 100 were wrong, against 10.
+  less exact than whisper: about 22 words in 100 were wrong, against 10.
 - **It needs a large GPU:** about 5 GB of VRAM for itself, and 13 GB of disk.
 - **It needs your language named.** `TALKEY_TRANSLATE_FROM` must be `nl`, `de`,
   `fr`, `es`, `it` or `pt`; `auto` does not work.
