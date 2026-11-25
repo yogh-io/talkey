@@ -157,8 +157,9 @@ class SeamlessEngine:
             state['stepped'] = now
             state['pending'] += words
             state['end'] = event['end']
+            # Not "end": the trace takes that name for a time.
             self.out.trace(phrase, 'step', heard_to=phrase.audio_from + event['heard_s'], compute=event['compute_s'],
-                           text=' '.join(words), end=event['end'])
+                           text=' '.join(words), ends=event['end'])
             if self.stream and state['pending']:
                 self.offer(state)
         elif event['event'] == 'done':
@@ -181,7 +182,7 @@ class SeamlessEngine:
         phrase, text = state['phrase'], ' '.join(state['pending'])
         wait, voice_left, cover, refill = self.out.gate(phrase, text)
         self.out.trace(phrase, 'agree', result=wait or 'spoken', piece=text, voice_left=round(voice_left, 3),
-                       end=state['end'])
+                       ends=state['end'])
         if wait is None:
             state['pending'], state['queued'] = [], True
             self.out.queue(phrase, text, ended=state['end'], cover=round(cover, 3), refill=round(refill, 3))

@@ -467,7 +467,9 @@ class SeamlessRuntimeTests(unittest.TestCase):
         for name in ('preview', 'draft', 'final_asr'):
             self.assertNotIn(name, names)
         # The audio the model had heard, timed like the rest of the trace from the first word.
-        self.assertGreater(next(event for event in self.events() if event['event'] == 'step')['heard_to'], 0)
+        step = next(event for event in self.events() if event['event'] == 'step')
+        self.assertGreater(step['heard_to'], 0)
+        self.assertIs(step['ends'], False)
 
     def test_a_server_that_dies_stops_the_session_without_another_engine(self):
         self.listen()
