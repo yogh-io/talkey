@@ -131,6 +131,7 @@ class SeamlessEngine:
                 self.process.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+                self.process.wait()
 
     def send(self, **message):
         try:

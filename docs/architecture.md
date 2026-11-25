@@ -234,7 +234,9 @@ real stdout aside, so a library that prints cannot break the protocol. After
 loading it runs one phrase of `TALKEY_TRANSLATE_MAX_S` seconds of quiet noise,
 which reserves the memory a long phrase needs and warms the kernels; too little
 GPU memory fails then, with the free memory and the other GPU users in the
-reason. It exits when its stdin ends, so a killed worker frees the GPU.
+reason. It exits as soon as its stdin ends, even while it loads, so a killed
+worker frees the GPU. A stop while the engine loads closes it before the worker
+waits for `start`, so the server has gone before the worker exits.
 
 The decoders give SentencePiece tokens. A token that starts with `▁` begins a
 word, any other continues the open word. `Words` releases a word when the next

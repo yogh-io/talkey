@@ -911,15 +911,20 @@ class Interpreter:
         # The engine loads while PyTorch and the voice load; the first phrase is not slow.
         with ThreadPoolExecutor(max_workers=1) as pool:
             warming = pool.submit(self.engine.start)
-            self.voice = Voice(self.voice_path)
-            # Also the first measure of how long the voice takes to start and to say a sentence.
-            began = time.monotonic()
-            for i, _ in enumerate(self.voice.stream('Hello, this is how the voice sounds today.')):
-                if not i:
-                    self.first_audio.append(time.monotonic() - began)
-            self.voice.end()
-            self.voice.pace = self.pace
-            warming.result()
+            try:
+                self.voice = Voice(self.voice_path)
+                # Also the first measure of how long the voice takes to start and to say a sentence.
+                began = time.monotonic()
+                for i, _ in enumerate(self.voice.stream('Hello, this is how the voice sounds today.')):
+                    if not i:
+                        self.first_audio.append(time.monotonic() - began)
+                self.voice.end()
+                self.voice.pace = self.pace
+                warming.result()
+            except BaseException:
+                # Leaving the block waits for start; a stop or an error ends the load first.
+                self.engine.close()
+                raise
         self.tick_sound = wait_sound(self.voice.sample_rate)
         self.players.append(self.player(os.environ.get('TALKEY_TRANSLATE_SINK', 'talkey_translate')))
         if os.environ.get('TALKEY_TRANSLATE_MONITOR', '0') == '1':

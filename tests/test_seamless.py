@@ -9,7 +9,9 @@ import json
 import os
 from pathlib import Path
 import queue
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -177,6 +179,25 @@ class ServeTests(unittest.TestCase):
         self.serve(load)
         self.wait_for(lambda: self.result)
         self.assertEqual((self.result, self.events), ([1], [{'event': 'error', 'message': 'ValueError: no CUDA device'}]))
+
+    def test_the_server_exits_once_its_input_ends_even_while_it_loads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            # Stand-ins for the Seamless stack: loading takes a minute.
+            (tmp/'stack').mkdir()
+            (tmp/'stack/numpy.py').write_text('')
+            (tmp/'stack/torch.py').write_text('import time\ntime.sleep(60)\n')
+            env = dict(os.environ, PYTHONPATH=str(tmp/'stack'), TALKEY_TRANSLATE_RUN=str(tmp),
+                       TALKEY_SEAMLESS_HOME=str(tmp/'home'))
+            process = subprocess.Popen([sys.executable, str(ROOT/'bin/talkey-seamless-server')], env=env,
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            self.addCleanup(process.stdout.close)
+            self.addCleanup(process.wait)
+            self.addCleanup(process.kill)
+            self.wait_for(lambda: (tmp/'seamless/cards/talkey.yaml').exists())
+            process.stdin.close()
+            self.assertEqual(process.wait(timeout=5), 0)
+            self.assertEqual(process.stdout.read(), b'')
 
     def test_the_cards_point_every_model_file_at_the_local_copy(self):
         card = server.card(Path('/data/seamless/models'))
@@ -385,6 +406,11 @@ FAKE_SERVER = '''if len(sys.argv) > 1 and sys.argv[1].endswith('/talkey-seamless
     if (root/'seamless-fail-start').exists():
         emit(event='error', message='not enough GPU memory for Seamless: 100 of 8000 MiB free')
         sys.exit(1)
+    if (root/'seamless-slow-load').exists():
+        # Like the real load, it reads nothing until it is ready.
+        import time
+        (root/'seamless-loading').write_text(str(os.getpid()))
+        time.sleep(10)
     emit(event='ready', load_s=.1, gpu_mb=100, step_s=.1)
     def lines(name):
         path = root/name
@@ -507,6 +533,13 @@ unit = root/'whisper-active'
 if args[1] == 'is-active': sys.exit(0 if unit.exists() else 3)
 if args[1] == 'stop': unit.unlink(missing_ok=True)
 if args[1] == 'start': unit.touch()
+loading = root/'seamless-loading'
+if args[1] == 'start' and loading.exists():
+    try:
+        state = pathlib.Path(f'/proc/{{loading.read_text()}}/stat').read_text().rsplit(') ', 1)[1].split()[0]
+    except FileNotFoundError:
+        state = 'gone'
+    (root/'server-when-whisper-started').write_text('gone' if state in ('gone', 'Z') else 'running')
 ''')
         fake.chmod(0o755)
         if active:
@@ -549,6 +582,16 @@ if args[1] == 'start': unit.touch()
         self.wait_for(lambda: not (self.state/'whisper.paused').exists())
         self.assertEqual(self.systemctl(), ['is-active', 'stop', 'start'])
         self.assertTrue((self.root/'whisper-active').exists())
+
+    def test_a_stop_while_seamless_loads_ends_it_before_whisper_starts(self):
+        self.fake_systemctl()
+        self.env['TALKEY_SEAMLESS_PAUSE_WHISPER'] = '1'
+        (self.root/'seamless-slow-load').touch()
+        self.run_key('translate', 'start')
+        self.wait_for(lambda: (self.root/'seamless-loading').exists())
+        self.run_key('translate', 'stop')
+        self.assertEqual(self.systemctl(), ['is-active', 'stop', 'start'])
+        self.assertEqual((self.root/'server-when-whisper-started').read_text(), 'gone')
 
     def test_the_next_dictation_starts_whisper_that_a_killed_session_left_paused(self):
         self.fake_systemctl(active=False)

@@ -242,10 +242,15 @@ def main():
         protocol.write(json.dumps(event) + '\n')
         protocol.flush()
 
+    def lines():
+        yield from sys.stdin
+        # The worker has gone. Exit now, even while loading, so the GPU memory is free at once.
+        os._exit(0)
+
     language = CODES[os.environ.get('TALKEY_TRANSLATE_FROM', 'nl')]
     run_dir = Path(os.environ['TALKEY_TRANSLATE_RUN'])
     warm_s = float(os.environ.get('TALKEY_TRANSLATE_MAX_S', '15'))
-    return serve(lambda: Model(language, run_dir, warm_s, started), sys.stdin, emit)
+    return serve(lambda: Model(language, run_dir, warm_s, started), lines(), emit)
 
 
 if __name__ == '__main__':
