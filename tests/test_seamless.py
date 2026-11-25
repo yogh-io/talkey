@@ -1,14 +1,22 @@
-"""The Seamless engine without the model: word completion and the server's loop, with fakes."""
+"""The Seamless engine without the model: word completion, the server's loop, the worker's side
+and a whole translate session, with fakes."""
 import base64
+from collections import deque
 import importlib.machinery
 import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 import queue
 import sys
 import threading
 import time
+import types
 import unittest
+from unittest.mock import patch
+
+import test_translate
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'lib'))
@@ -177,6 +185,335 @@ class ServeTests(unittest.TestCase):
         self.assertIn('tokenizer: "file:///data/seamless/models/tokenizer.model"', card)
         self.assertEqual([line for line in card.splitlines() if line.startswith('name:')],
                          ['name: seamless_streaming_unity@user', 'name: seamless_streaming_monotonic_decoder@user'])
+
+
+class FakeOut:
+    """Only what an engine may use of the Interpreter: anything else is an AttributeError."""
+    __slots__ = ('cycle', 'calls', 'waits', 'events', 'errors')
+
+    def __init__(self, waits=()):
+        self.cycle, self.calls, self.waits, self.events, self.errors = deque(maxlen=20), [], list(waits), [], []
+
+    def trace(self, phrase, event, **fields):
+        self.events.append((event, fields))
+
+    def guard(self, work):
+        def run():
+            try:
+                work()
+            except Exception as error:
+                self.errors.append(error)
+        threading.Thread(target=run, daemon=True).start()
+
+    def heard(self, phrase, text, live=True):
+        self.calls.append(('heard', text, live))
+
+    def gate(self, phrase, piece):
+        self.calls.append(('gate', piece))
+        return (self.waits.pop(0) if self.waits else None), 0.0, 1.0, 1.0
+
+    def queue(self, phrase, text, joined=False, ended=False, last=False, **trace):
+        self.calls.append(('queue', text, last, ended))
+
+    def finish(self, phrase):
+        self.calls.append(('finish',))
+
+    def drop(self, phrase):
+        self.calls.append(('drop',))
+
+    def ends(self):
+        return [call for call in self.calls if call[0] in ('finish', 'drop')]
+
+
+class EngineTests(unittest.TestCase):
+    def engine(self, out):
+        engine = seamless.SeamlessEngine(out)
+        engine.process = types.SimpleNamespace(stdin=io.StringIO())
+        phrase = types.SimpleNamespace(number=1, frames=[b'a' * 1024, b'b' * 1024], audio_from=0.0)
+        engine.begin(phrase)
+        return engine, phrase
+
+    def step(self, engine, *words, end=False):
+        engine.event({'event': 'step', 'n': 1, 'heard_s': .32, 'compute_s': .05, 'words': list(words), 'end': end})
+
+    def test_the_phrase_goes_to_the_server_as_it_is_heard(self):
+        engine, phrase = self.engine(FakeOut())
+        phrase.frames.append(b'c' * 1024)
+        engine.hear(phrase)
+        engine.hear(phrase)
+        phrase.frames.append(b'd' * 1024)
+        engine.end(phrase)
+        sent = [json.loads(line) for line in engine.process.stdin.getvalue().splitlines()]
+        self.assertEqual([(m['op'], base64.b64decode(m.get('pcm', ''))) for m in sent],
+                         [('start', b''), ('audio', b'a' * 1024 + b'b' * 1024), ('audio', b'c' * 1024),
+                          ('audio', b'd' * 1024), ('end', b'')])
+        self.assertEqual({m['n'] for m in sent}, {1})
+
+    def test_whole_words_go_to_the_voice_through_the_shared_gate(self):
+        out = FakeOut()
+        engine, _ = self.engine(out)
+        self.step(engine)
+        self.step(engine, 'Good', 'morning')
+        self.step(engine, 'all.', end=True)
+        self.assertEqual(out.calls, [('gate', 'Good morning'), ('queue', 'Good morning', False, False),
+                                     ('gate', 'all.'), ('queue', 'all.', False, True)])
+        self.assertEqual(len(out.cycle), 3)
+        agreed = [fields for event, fields in out.events if event == 'agree']
+        self.assertEqual([(a['result'], a['piece']) for a in agreed], [('spoken', 'Good morning'), ('spoken', 'all.')])
+
+    def test_a_held_piece_grows_and_is_offered_again_on_every_step(self):
+        out = FakeOut(waits=['would-run-dry', 'voice-busy', 'voice-busy'])
+        engine, _ = self.engine(out)
+        self.step(engine, 'We')
+        self.step(engine)
+        self.step(engine, 'start', 'now')
+        self.step(engine)
+        self.assertEqual(out.calls, [('gate', 'We'), ('gate', 'We'), ('gate', 'We start now'), ('gate', 'We start now'),
+                                     ('queue', 'We start now', False, False)])
+        results = [fields['result'] for event, fields in out.events if event == 'agree']
+        self.assertEqual(results, ['would-run-dry', 'voice-busy', 'voice-busy', 'spoken'])
+
+    def test_the_rest_goes_out_as_the_last_piece_when_the_phrase_ends(self):
+        out = FakeOut(waits=['voice-busy'])
+        engine, _ = self.engine(out)
+        self.step(engine, 'See', 'you')
+        engine.event({'event': 'done', 'n': 1, 'heard_s': .5, 'compute_s': .1, 'words': ['soon.'], 'end': False})
+        engine.event({'event': 'source', 'n': 1, 'words': ['Tot', 'ziens.'], 'final': True})
+        self.assertEqual(out.calls, [('gate', 'See you'), ('queue', 'See you soon.', True, False), ('finish',),
+                                     ('heard', 'Tot ziens.', False)])
+        self.assertEqual(engine.phrases, {})
+        self.assertEqual([event for event, _ in out.events], ['step', 'agree', 'closed', 'final', 'source'])
+
+    def test_a_phrase_without_english_leaves_the_subtitles(self):
+        out = FakeOut()
+        engine, _ = self.engine(out)
+        self.step(engine)
+        engine.event({'event': 'source', 'n': 1, 'words': ['eh'], 'final': False})
+        engine.event({'event': 'done', 'n': 1, 'heard_s': .5, 'compute_s': .1, 'words': [], 'end': False})
+        engine.event({'event': 'source', 'n': 1, 'words': [], 'final': True})
+        self.assertEqual(out.calls, [('heard', 'eh', True), ('drop',), ('heard', 'eh', False)])
+
+    def test_without_streaming_the_english_waits_for_the_pause(self):
+        with patch.dict(os.environ, TALKEY_TRANSLATE_STREAM='0'):
+            out = FakeOut()
+            engine, _ = self.engine(out)
+        self.step(engine, 'One', 'two')
+        self.step(engine, 'three')
+        self.assertEqual(out.calls, [])
+        engine.event({'event': 'done', 'n': 1, 'heard_s': .5, 'compute_s': .1, 'words': ['four.'], 'end': False})
+        self.assertEqual(out.calls, [('queue', 'One two three four.', True, False), ('finish',)])
+
+    def test_an_error_from_the_server_stops_the_session(self):
+        engine, _ = self.engine(FakeOut())
+        with self.assertRaisesRegex(RuntimeError, 'not enough GPU memory'):
+            engine.event({'event': 'error', 'message': 'not enough GPU memory for Seamless'})
+
+
+class ContractTests(unittest.TestCase):
+    """Each engine works with only the contract's members of the Interpreter and ends every phrase once."""
+
+    def test_the_whisper_engine_keeps_to_the_contract(self):
+        worker = test_translate.worker
+
+        class Translate:
+            def __call__(self, text, spoken='', context=''):
+                return 'EN ' + text, False
+
+            def ends(self, text):
+                return 0.0
+
+            def context(self):
+                return ''
+
+            def remember(self, text, english):
+                pass
+
+        def words(text):
+            return text, [(word, 1.0) for word in text.split()], 0.0
+
+        out = FakeOut()
+        with patch.dict(os.environ, TALKEY_TRANSLATE_PREVIEW_MS='100'), \
+                patch.object(worker, 'preview', lambda *args: words('een twee')), \
+                patch.object(worker, 'transcribe_words', lambda *args: words('een twee drie.')):
+            engine = worker.WhisperEngine(out, Translate())
+            engine.start()
+            phrase = worker.Phrase(time.monotonic(), 1)
+            phrase.frames = [bytes(1024)] * 3
+            engine.begin(phrase)
+            for _ in range(2):
+                phrase.frames += [bytes(1024)] * 4
+                engine.hear(phrase)
+                engine.previewing.result()
+            phrase.audio = b''.join(phrase.frames)
+            engine.end(phrase)
+            deadline = time.monotonic() + 3
+            while not out.ends():
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(.01)
+            time.sleep(.1)
+            engine.close()
+        self.assertEqual(out.errors, [])
+        self.assertEqual(out.ends(), [('finish',)])
+        self.assertIn(('heard', 'een twee drie.', False), out.calls)
+        self.assertEqual([call for call in out.calls if call[0] == 'queue'][-1], ('queue', 'EN een twee drie.', True, False))
+
+    def test_the_seamless_engine_keeps_to_the_contract(self):
+        out = FakeOut()
+        engine = seamless.SeamlessEngine(out)
+        engine.process = types.SimpleNamespace(stdin=io.StringIO())
+        for n in (1, 2):
+            phrase = types.SimpleNamespace(number=n, frames=[bytes(1024)], audio_from=0.0)
+            engine.begin(phrase)
+            engine.end(phrase)
+        for line in ['{"event": "step", "n": 1, "heard_s": 0.32, "compute_s": 0.1, "words": ["Hi"], "end": false}',
+                     '{"event": "done", "n": 1, "heard_s": 0.4, "compute_s": 0.1, "words": [], "end": false}',
+                     '{"event": "source", "n": 1, "words": ["Hoi"], "final": true}',
+                     '{"event": "done", "n": 2, "heard_s": 0.4, "compute_s": 0.1, "words": [], "end": false}',
+                     '{"event": "source", "n": 2, "words": [], "final": true}']:
+            engine.event(json.loads(line))
+        self.assertEqual(out.ends(), [('finish',), ('drop',)])
+        self.assertEqual(out.errors, [])
+
+
+FAKE_SERVER = '''if len(sys.argv) > 1 and sys.argv[1].endswith('/talkey-seamless-server'):
+    import base64, json
+    root = pathlib.Path(os.environ['TEST_ROOT'])
+    if sys.argv[2:] == ['--check']:
+        sys.exit(1 if (root/'seamless-broken').exists() else 0)
+    def emit(**event):
+        print(json.dumps(event), flush=True)
+    if (root/'seamless-fail-start').exists():
+        emit(event='error', message='not enough GPU memory for Seamless: 100 of 8000 MiB free')
+        sys.exit(1)
+    emit(event='ready', load_s=.1, gpu_mb=100, step_s=.1)
+    def lines(name):
+        path = root/name
+        return path.read_text().splitlines() if path.exists() else []
+    for line in sys.stdin:
+        message = json.loads(line)
+        if message['op'] == 'start':
+            n, heard, pending = message['n'], 0, 0
+            english = (lines('seamless-english')[n - 1:n] or [''])[0].split()
+            own = (lines('seamless-source')[n - 1:n] or [''])[0].split()
+        elif message['op'] == 'audio':
+            pending += len(base64.b64decode(message['pcm']))
+            if pending >= 10240:
+                if (root/'seamless-die').exists():
+                    sys.exit(1)
+                heard, pending = heard + pending, 0
+                emit(event='step', n=n, heard_s=heard / 32000, compute_s=.01, words=english[:1], end=False)
+                english = english[1:]
+                if own:
+                    emit(event='source', n=n, words=own[:1], final=False)
+                    own = own[1:]
+        elif message['op'] == 'end':
+            emit(event='done', n=n, heard_s=(heard + pending) / 32000, compute_s=.01, words=english, end=False)
+            emit(event='source', n=n, words=own, final=True)
+    sys.exit(0)
+'''
+
+
+class SeamlessRuntimeTests(unittest.TestCase):
+    """A whole translate session with the Seamless engine, its server replaced by a scripted fake."""
+    harness = test_translate.TranslateRuntimeTests
+    run_key, wait_for, status, listen, spoken = (harness.run_key, harness.wait_for, harness.status, harness.listen,
+                                                 harness.spoken)
+    subtitles, notified, record_notifications = harness.subtitles, harness.notified, harness.record_notifications
+
+    def setUp(self):
+        self.harness.setUp(self)
+        self.home = self.root/'seamless'
+        (self.home/'venv/bin').mkdir(parents=True)
+        (self.home/'models').mkdir()
+        for name in seamless.WEIGHTS:
+            (self.home/'models'/name).touch()
+        wrapper = self.commands/'python3'
+        wrapper.write_text(wrapper.read_text().replace('os.execv(', FAKE_SERVER + 'os.execv(', 1))
+        (self.home/'venv/bin/python').symlink_to(wrapper)
+        self.env.update(TALKEY_TRANSLATE_ENGINE='seamless', TALKEY_SEAMLESS_HOME=str(self.home),
+                        TALKEY_TRANSLATE_TRACE='1')
+
+    def tearDown(self):
+        self.harness.tearDown(self)
+
+    def speak(self, english, source):
+        (self.root/'seamless-english').write_text(english + '\n')
+        (self.root/'seamless-source').write_text(source + '\n')
+        self.mute.unlink()
+        self.wait_for(lambda: self.status()['state'] == 'hearing')
+
+    def events(self):
+        trace = self.state/'translate.current/trace.jsonl'
+        return [json.loads(line) for line in trace.read_text().splitlines()] if trace.exists() else []
+
+    def test_english_streams_into_the_microphone_and_the_window(self):
+        self.listen()
+        self.assertEqual(self.status()['engine'], 'seamless')
+        self.speak('Good morning all of you.', 'Goedemorgen allemaal samen.')
+        # The first words go out while the phrase is still heard.
+        self.wait_for(lambda: self.spoken().startswith(b'Good'))
+        self.assertEqual(self.status()['state'], 'hearing')
+        self.mute.touch()
+        self.wait_for(lambda: self.subtitles() and self.subtitles()[-1]['done'])
+        self.wait_for(lambda: self.spoken() == b''.join(piece['text'].encode() for piece in self.subtitles()[-1]['pieces']))
+        line = self.subtitles()[-1]
+        self.assertEqual((line['english'], line['dutch'], line['live']),
+                         ('Good morning all of you.', 'Goedemorgen allemaal samen.', False))
+        self.assertGreater(len(line['pieces']), 1)
+        self.wait_for(lambda: '"event": "spoken"' in json.dumps(self.events()))
+        names = [event['event'] for event in self.events()]
+        for name in ('speech_start', 'step', 'source', 'agree', 'queue', 'play', 'speech_end', 'closed', 'final'):
+            self.assertIn(name, names)
+        for name in ('preview', 'draft', 'final_asr'):
+            self.assertNotIn(name, names)
+        # The audio the model had heard, timed like the rest of the trace from the first word.
+        self.assertGreater(next(event for event in self.events() if event['event'] == 'step')['heard_to'], 0)
+
+    def test_a_server_that_dies_stops_the_session_without_another_engine(self):
+        self.listen()
+        self.speak('one two three four five six seven eight', 'een twee drie vier vijf zes zeven acht')
+        self.wait_for(lambda: self.spoken())
+        (self.root/'seamless-die').touch()
+        self.wait_for(lambda: self.status()['state'] == 'error')
+        self.assertFalse(self.status()['enabled'])
+        spoken = self.spoken()
+        self.mute.touch()
+        time.sleep(.5)
+        self.assertEqual(self.spoken(), spoken)
+        self.assertNotIn(b'eight', spoken)
+        # Whisper and the translator were never asked.
+        self.assertFalse((self.root/'prompts').exists())
+        self.assertFalse({'preview', 'draft', 'final_asr'} & {event['event'] for event in self.events()})
+
+    def test_an_error_at_start_is_the_reason_in_the_notification(self):
+        self.record_notifications()
+        (self.root/'seamless-fail-start').touch()
+        self.run_key('translate', 'start')
+        self.wait_for(lambda: self.status()['state'] == 'error')
+        self.assertEqual(self.status()['engine'], 'seamless')
+        self.wait_for(lambda: 'translate stopped: not enough GPU memory for Seamless: 100 of 8000 MiB free'
+                      in self.notified())
+
+    def test_the_check_names_what_is_missing(self):
+        self.record_notifications()
+
+        def refused(reason):
+            self.assertNotEqual(self.run_key('translate', 'start', check=False).returncode, 0)
+            self.assertFalse(self.status()['enabled'])
+            self.assertIn(reason, self.notified()[-1])
+            self.assertTrue(self.notified()[-1].endswith('run: talkey-setup seamless') or 'TALKEY_TRANSLATE_FROM' in reason)
+
+        self.env['TALKEY_TRANSLATE_FROM'] = 'auto'
+        refused('needs TALKEY_TRANSLATE_FROM set to one of: nl, de, fr, es, it, pt')
+        del self.env['TALKEY_TRANSLATE_FROM']
+        (self.home/'models/tokenizer.model').unlink()
+        refused('Seamless weights missing in')
+        (self.home/'models/tokenizer.model').touch()
+        (self.root/'seamless-broken').touch()
+        refused('; run: talkey-setup seamless')
+        self.env['TALKEY_SEAMLESS_HOME'] = str(self.root/'nowhere')
+        refused(f'no Seamless environment at {self.root}/nowhere')
+        self.assertFalse((self.root/'devices').exists())
 
 
 if __name__ == '__main__':

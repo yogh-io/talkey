@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Live translation into a virtual microphone, spoken in your cloned voice.
 
-Capture, Silero VAD and endpoints match auto mode. While a phrase is spoken, it is
-transcribed and translated again every quarter second; English that later drafts keep
-is spoken before the phrase ends, and the rest when it does. Phrases are spoken in
-order, each as one continuous utterance.
+Capture, Silero VAD and endpoints match auto mode. An engine turns each phrase into English
+while it is spoken. The default one transcribes and translates it again every quarter second;
+English that later drafts keep is spoken before the phrase ends, and the rest when it does.
+The optional Seamless engine lives in lib/seamless.py. Phrases are spoken in order, each as
+one continuous utterance.
 """
 import argparse
 from collections import deque
@@ -33,6 +34,7 @@ for data in (Path(os.environ.get('TALKEY_DATA_DIR', '/nonexistent')),
         sys.path.insert(0, str(data / 'lib'))
         DATA_DIR = data
         break
+from seamless import SeamlessEngine
 from speech import transcribe_words
 from vad import FRAME_BYTES, FRAME_MS, Endpoint, Silero, setting
 
@@ -515,7 +517,7 @@ class WhisperEngine:
                 self.translate.remember(text, phrase.english)
 
 
-ENGINES = {'whisper': WhisperEngine}
+ENGINES = {'whisper': WhisperEngine, 'seamless': SeamlessEngine}
 
 
 class Voice:
