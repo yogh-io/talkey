@@ -387,7 +387,6 @@ class Translator:
 class WhisperEngine:
     """Whisper hears the phrase while it is spoken, TranslateGemma drafts its English, and the English
     later drafts keep goes to the voice before the phrase ends."""
-    name = 'whisper'
 
     def __init__(self, out, translator=None):
         self.out, self.translate, self.trace = out, translator or Translator(), out.trace

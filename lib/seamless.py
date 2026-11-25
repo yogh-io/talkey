@@ -75,7 +75,6 @@ class SeamlessEngine:
     """SeamlessStreaming hears the phrase while it is spoken and writes its English as it goes, in a
     server process of its own. Each whole English word goes to the voice as soon as the voice's
     timing lets it; the words of the speaker's own language are the subtitles."""
-    name = 'seamless'
 
     def __init__(self, out):
         self.out, self.process, self.closing = out, None, False
