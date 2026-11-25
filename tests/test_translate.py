@@ -454,7 +454,6 @@ class TranslateRuntimeTests(unittest.TestCase):
             fake = self.commands/name
             fake.write_text(AUDIO)
             fake.chmod(0o755)
-        (self.commands/'notify-send').write_text('#!/usr/bin/env bash\nprintf \'%s\\n\' "${@: -1}" >> "$TEST_ROOT/notified"\n')
         voice = self.root/'voice.safetensors'
         voice.touch()
         self.env.update(TALKEY_TRANSLATE_PYTHON='python3', TALKEY_TRANSLATE_VOICE=str(voice),
@@ -535,6 +534,10 @@ class TranslateRuntimeTests(unittest.TestCase):
     def spoken(self):
         path = self.root/'spoken'
         return path.read_bytes() if path.exists() else b''
+
+    def record_notifications(self):
+        # Only where a test reads them: a faster fake leaves less silence before a test speaks.
+        (self.commands/'notify-send').write_text('#!/usr/bin/env bash\nprintf \'%s\\n\' "${@: -1}" >> "$TEST_ROOT/notified"\n')
 
     def notified(self):
         path = self.root/'notified'
@@ -809,6 +812,7 @@ class TranslateRuntimeTests(unittest.TestCase):
         self.assertFalse(self.status()['enabled'])
 
     def test_missing_voice_fails_before_creating_devices(self):
+        self.record_notifications()
         self.env['TALKEY_TRANSLATE_VOICE'] = str(self.root/'missing.safetensors')
         self.assertNotEqual(self.run_key('translate', 'start', check=False).returncode, 0)
         self.assertFalse((self.root/'devices').exists())
@@ -857,6 +861,7 @@ class TranslateRuntimeTests(unittest.TestCase):
         self.assertEqual(len(list((self.root/'archive').glob('memo-*.wav'))), 2)
 
     def test_translator_failing_at_startup_is_reported(self):
+        self.record_notifications()
         (self.root/'fail-translator').touch()
         self.run_key('translate', 'start')
         self.wait_for(lambda: self.status()['state'] == 'error')
