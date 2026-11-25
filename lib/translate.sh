@@ -25,7 +25,7 @@ translate_devices() {
 translate_start() {
   gesture_cancel
   translate_active && return 0
-  local python="${TALKEY_TRANSLATE_PYTHON:-python3}" source="$AUDIO_SOURCE"
+  local python="${TALKEY_TRANSLATE_PYTHON:-python3}" source="$AUDIO_SOURCE" reason
   command -v "$python" > /dev/null || { echo "talkey translate: Python not found: $python" >&2; return 1; }
   [[ "$source" != default ]] || source="$(pactl get-default-source 2> /dev/null || true)"
   if [[ "$source" == "$TRANSLATE_MIC" ]]; then
@@ -33,8 +33,10 @@ translate_start() {
     notify 'translate: your input is the talkey English mic - choose your real microphone' 5000
     return 1
   fi
-  if ! TALKEY_TRANSLATE_ENGINE="$TRANSLATE_ENGINE" "$python" "$SCRIPT_DIR/talkey-translate-worker" --check; then
-    notify 'translate mode unavailable - run: talkey-setup translate' 5000
+  if ! reason="$(TALKEY_TRANSLATE_ENGINE="$TRANSLATE_ENGINE" "$python" "$SCRIPT_DIR/talkey-translate-worker" --check 2>&1)"; then
+    printf '%s\n' "$reason" >&2
+    reason="$(tail -n 1 <<< "$reason")"
+    notify "translate mode unavailable: ${reason#talkey translate: }" 8000
     return 1
   fi
   preflight_ok || return 1
@@ -99,6 +101,7 @@ translate_event() {
       notify 'translating to English - pick "talkey English mic" in your call' 4000 ;;
     error)
       translate_state error
-      notify 'translate stopped after an error - see the talkey runtime log' 5000 ;;
+      local reason; reason="$(head -n 1 "$TRANSLATE_DIR/error" 2> /dev/null)"
+      notify "translate stopped: ${reason:-see the talkey runtime log}" 8000 ;;
   esac
 }

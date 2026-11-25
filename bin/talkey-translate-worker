@@ -1055,6 +1055,8 @@ def main():
         print(f'talkey translate: {error}', file=sys.stderr)
         if interpreter:
             try:
+                # The notification names the reason; it never holds what was said.
+                (interpreter.run_dir / 'error').write_text(f'{error}\n')
                 interpreter.call('error')
             except (Exception, StopRequested):
                 pass

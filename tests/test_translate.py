@@ -454,6 +454,7 @@ class TranslateRuntimeTests(unittest.TestCase):
             fake = self.commands/name
             fake.write_text(AUDIO)
             fake.chmod(0o755)
+        (self.commands/'notify-send').write_text('#!/usr/bin/env bash\nprintf \'%s\\n\' "${@: -1}" >> "$TEST_ROOT/notified"\n')
         voice = self.root/'voice.safetensors'
         voice.touch()
         self.env.update(TALKEY_TRANSLATE_PYTHON='python3', TALKEY_TRANSLATE_VOICE=str(voice),
@@ -534,6 +535,10 @@ class TranslateRuntimeTests(unittest.TestCase):
     def spoken(self):
         path = self.root/'spoken'
         return path.read_bytes() if path.exists() else b''
+
+    def notified(self):
+        path = self.root/'notified'
+        return path.read_text().splitlines() if path.exists() else []
 
     def test_phrases_are_spoken_in_order_into_the_virtual_microphone(self):
         self.listen()
@@ -807,6 +812,8 @@ class TranslateRuntimeTests(unittest.TestCase):
         self.env['TALKEY_TRANSLATE_VOICE'] = str(self.root/'missing.safetensors')
         self.assertNotEqual(self.run_key('translate', 'start', check=False).returncode, 0)
         self.assertFalse((self.root/'devices').exists())
+        self.assertEqual(self.notified(), [f'translate mode unavailable: no voice at {self.root}/missing.safetensors; '
+                                           'run: talkey-setup translate'])
 
     def test_auto_and_translate_exclude_each_other(self):
         self.listen('auto')
@@ -854,6 +861,9 @@ class TranslateRuntimeTests(unittest.TestCase):
         self.run_key('translate', 'start')
         self.wait_for(lambda: self.status()['state'] == 'error')
         self.assertFalse(self.status()['enabled'])
+        # The notification says why.
+        self.wait_for(lambda: 'translate stopped: test translator down' in self.notified())
+        self.assertEqual((self.state/'translate.current/error').read_text(), 'test translator down\n')
 
     def test_worker_error_is_reported(self):
         self.listen()
