@@ -458,8 +458,7 @@ class TranslateRuntimeTests(unittest.TestCase):
         voice = self.root/'voice.safetensors'
         voice.touch()
         self.env.update(TALKEY_TRANSLATE_PYTHON='python3', TALKEY_TRANSLATE_VOICE=str(voice),
-                        TALKEY_TRANSLATE_SILENCE_MS='160', TALKEY_TRANSLATE_QUICK_AFTER_S='600',
-                        TALKEY_TRANSLATE_TICK='0')
+                        TALKEY_TRANSLATE_SILENCE_MS='160', TALKEY_TRANSLATE_TICK='0')
         wrapper = self.commands/'python3'
         script = wrapper.read_text()
         fakes = f'''if sys.argv[1].endswith('/talkey-translate-worker'):
@@ -592,7 +591,6 @@ class TranslateRuntimeTests(unittest.TestCase):
         self.assertFalse((self.state/'translate.raw').exists())
 
     def test_dutch_preview_shows_while_speaking(self):
-        self.env['TALKEY_TRANSLATE_PREVIEW_MS'] = '100'
         self.listen()
         (self.root/'heard').write_text('Definitief.\n')
         self.mute.unlink()
@@ -603,7 +601,6 @@ class TranslateRuntimeTests(unittest.TestCase):
         self.wait_for(lambda: self.subtitles()[-1]['dutch'] == 'Definitief.')
 
     def test_agreed_english_is_spoken_before_the_pause(self):
-        self.env['TALKEY_TRANSLATE_PREVIEW_MS'] = '100'
         self.listen()
         (self.root/'preview-lines').write_text('een twee\neen twee drie\n')
         (self.root/'heard').write_text('een twee drie vier.\n')
@@ -623,16 +620,15 @@ class TranslateRuntimeTests(unittest.TestCase):
         self.assertRegex(log, r'voice began [0-9.]+s after you did, -[0-9.]+s from your pause')
 
     def test_only_words_whisper_stands_by_are_translated(self):
-        self.env.update(TALKEY_TRANSLATE_PREVIEW_MS='100', TALKEY_TRANSLATE_TRACE='1')
+        self.env.update(TALKEY_TRANSLATE_TRACE='1')
         self.listen()
         # "twee" changes in the next preview, and whisper is unsure of "vier" until a third preview agrees.
         (self.root/'preview-lines').write_text('een twee\neen drie ~vier\neen drie ~vier vijf\n')
         (self.root/'heard').write_text('een drie vier vijf.\n')
         self.mute.unlink()
-        self.wait_for(lambda: (self.root/'preview-lines').read_text().startswith('een drie ~vier vijf'))
-        time.sleep(.3)
-        self.mute.touch()
         trace = self.state/'translate.current/trace.jsonl'
+        self.wait_for(lambda: trace.exists() and trace.read_text().count('"event": "preview"') >= 4)
+        self.mute.touch()
         self.wait_for(lambda: trace.exists() and '"event": "spoken"' in trace.read_text())
         events = [json.loads(line) for line in trace.read_text().splitlines()]
         sources = [e['source'] for e in events if e['event'] == 'draft']
@@ -646,7 +642,7 @@ class TranslateRuntimeTests(unittest.TestCase):
         with wave.open(str(sounds/'translate-tick.wav'), 'wb') as sound:
             sound.setnchannels(1); sound.setsampwidth(2); sound.setframerate(24000)
             sound.writeframes(b'TICK')
-        self.env.update(TALKEY_TRANSLATE_PREVIEW_MS='100', TALKEY_TRANSLATE_TICK='1', TALKEY_SOUND_DIR=str(sounds))
+        self.env.update(TALKEY_TRANSLATE_TICK='1', TALKEY_SOUND_DIR=str(sounds))
         self.listen()
         (self.root/'preview-lines').write_text('een twee\neen twee drie\n')
         (self.root/'heard').write_text('een twee drie vier.\n')
@@ -666,7 +662,7 @@ class TranslateRuntimeTests(unittest.TestCase):
         with wave.open(str(sounds/'translate-tick.wav'), 'wb') as sound:
             sound.setnchannels(1); sound.setsampwidth(2); sound.setframerate(24000)
             sound.writeframes(b'TICK')
-        self.env.update(TALKEY_TRANSLATE_PREVIEW_MS='100', TALKEY_TRANSLATE_TICK='1', TALKEY_SOUND_DIR=str(sounds),
+        self.env.update(TALKEY_TRANSLATE_TICK='1', TALKEY_SOUND_DIR=str(sounds),
                         TALKEY_TRANSLATE_RECORD='1')
         self.listen()
         (self.root/'preview-lines').write_text('een twee\neen twee drie\n')
@@ -702,7 +698,7 @@ class TranslateRuntimeTests(unittest.TestCase):
         self.assertFalse((self.state/'translate.current/trace.jsonl').exists())
 
     def test_the_trace_times_each_step_of_a_phrase_from_its_first_word(self):
-        self.env.update(TALKEY_TRANSLATE_PREVIEW_MS='100', TALKEY_TRANSLATE_TRACE='1')
+        self.env.update(TALKEY_TRANSLATE_TRACE='1')
         self.listen()
         (self.root/'preview-lines').write_text('een twee\neen twee drie\n')
         (self.root/'heard').write_text('een twee drie vier.\n')
@@ -743,18 +739,6 @@ class TranslateRuntimeTests(unittest.TestCase):
         self.assertIn('--device=test_out', json.loads((self.root/'pacat-args').read_text().splitlines()[0]))
         self.assertEqual((self.root/'devices').read_text().split(), ['sinks:test_out', 'sources:test_out_mic'])
         self.assertEqual(self.status()['microphone'], 'test_out_mic')
-
-    def test_streaming_off_waits_for_the_pause(self):
-        self.env.update(TALKEY_TRANSLATE_PREVIEW_MS='100', TALKEY_TRANSLATE_STREAM='0')
-        self.listen()
-        (self.root/'preview-lines').write_text('een twee\neen twee drie\n')
-        (self.root/'heard').write_text('een twee drie vier.\n')
-        self.mute.unlink()
-        self.wait_for(lambda: (self.root/'preview-lines').read_text().startswith('een twee drie'))
-        time.sleep(.5)
-        self.assertEqual(self.spoken(), b'')
-        self.mute.touch()
-        self.wait_for(lambda: self.spoken() == b'EN:een twee drie vier.')
 
     def test_recent_sentences_are_whisper_context(self):
         self.listen()

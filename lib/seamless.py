@@ -78,7 +78,6 @@ class SeamlessEngine:
 
     def __init__(self, out):
         self.out, self.process, self.closing = out, None, False
-        self.stream = os.environ.get('TALKEY_TRANSLATE_STREAM', '1') == '1'
         # Per phrase number: the phrase, the frames sent, the English not yet spoken, whether the
         # model's next token ended the text, the source words, whether any English went out, and
         # when the latest step came.
@@ -160,7 +159,7 @@ class SeamlessEngine:
             # eot: the model's next token is the end of the text.
             self.out.trace(phrase, 'step', heard_to=phrase.audio_from + event['heard_s'], compute=event['compute_s'],
                            text=' '.join(words), eot=event['end'])
-            if self.stream and state['pending']:
+            if state['pending']:
                 self.offer(state)
         elif event['event'] == 'done':
             state['pending'] += words

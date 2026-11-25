@@ -315,16 +315,6 @@ class EngineTests(unittest.TestCase):
         engine.event({'event': 'source', 'n': 1, 'words': [], 'final': True})
         self.assertEqual(out.calls, [('heard', 'eh', True), ('drop',), ('heard', 'eh', False)])
 
-    def test_without_streaming_the_english_waits_for_the_pause(self):
-        with patch.dict(os.environ, TALKEY_TRANSLATE_STREAM='0'):
-            out = FakeOut()
-            engine, _ = self.engine(out)
-        self.step(engine, 'One', 'two')
-        self.step(engine, 'three')
-        self.assertEqual(out.calls, [])
-        engine.event({'event': 'done', 'n': 1, 'heard_s': .5, 'compute_s': .1, 'words': ['four.'], 'end': False})
-        self.assertEqual(out.calls, [('queue', 'One two three four.', True, False), ('finish',)])
-
     def test_an_error_from_the_server_stops_the_session(self):
         engine, _ = self.engine(FakeOut())
         with self.assertRaisesRegex(RuntimeError, 'not enough GPU memory'):
@@ -354,8 +344,7 @@ class ContractTests(unittest.TestCase):
             return text, [(word, 1.0) for word in text.split()], 0.0
 
         out = FakeOut()
-        with patch.dict(os.environ, TALKEY_TRANSLATE_PREVIEW_MS='100'), \
-                patch.object(test_translate.engine, 'preview', lambda *args: words('een twee')), \
+        with patch.object(test_translate.engine, 'preview', lambda *args: words('een twee')), \
                 patch.object(test_translate.engine, 'transcribe_words', lambda *args: words('een twee drie.')):
             engine = test_translate.engine.WhisperEngine(out, Translate())
             engine.start()
@@ -363,7 +352,7 @@ class ContractTests(unittest.TestCase):
             phrase.frames = [bytes(1024)] * 3
             engine.begin(phrase)
             for _ in range(2):
-                phrase.frames += [bytes(1024)] * 4
+                phrase.frames += [bytes(1024)] * engine.preview_frames
                 engine.hear(phrase)
                 engine.previewing.result()
             phrase.audio = b''.join(phrase.frames)

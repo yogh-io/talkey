@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 
 from speech import transcribe_words
-from vad import FRAME_MS, setting
+from vad import FRAME_MS
 
 LANGUAGES = {'nl': 'Dutch', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'it': 'Italian', 'pt': 'Portuguese'}
 # Whisper's stock captions for near-silent Dutch and English clips.
@@ -253,27 +253,27 @@ class Translator:
 class WhisperEngine:
     """Whisper hears the phrase while it is spoken, TranslateGemma drafts its English, and the English
     later drafts keep goes to the voice before the phrase ends."""
+    # How often the phrase so far is transcribed and translated.
+    PREVIEW_S = 0.25
+    # How sure the model must be that a sentence can end after the Dutch so far, to speak its whole draft.
+    END_P = 0.2
+    # Below this probability, a word must be the same in three transcripts, not two, to be translated.
+    WORD_P = 0.5
 
     def __init__(self, out, translator=None):
         self.out, self.translate, self.trace = out, translator or Translator(), out.trace
         self.url = os.environ.get('TALKEY_WHISPER_URL', 'http://127.0.0.1:8910/inference')
         self.language = os.environ.get('TALKEY_TRANSLATE_FROM', 'nl')
         self.phrases = queue.Queue()
-        self.preview_s = setting('TRANSLATE_PREVIEW_MS', '250', 100, 10000) / 1000
-        self.preview_frames = math.ceil(self.preview_s * 1000 / FRAME_MS)
-        self.end_p = setting('TRANSLATE_END_P', '0.2', 0.01, 1)
-        self.word_p = setting('TRANSLATE_WORD_P', '0.5', 0, 1)
-        self.stream = os.environ.get('TALKEY_TRANSLATE_STREAM', '1') == '1'
+        self.preview_frames = math.ceil(self.PREVIEW_S * 1000 / FRAME_MS)
         self.previews = ThreadPoolExecutor(max_workers=1)
         self.previewing = None
         self.recent = deque(maxlen=2)
-        out.cycle.append(self.preview_s)
+        out.cycle.append(self.PREVIEW_S)
 
     @classmethod
     def check(cls):
-        setting('TRANSLATE_PREVIEW_MS', '250', 100, 10000)
-        setting('TRANSLATE_END_P', '0.2', 0.01, 1)
-        setting('TRANSLATE_WORD_P', '0.5', 0, 1)
+        """Nothing to check before it loads: whisper and Ollama are asked when it starts."""
 
     def start(self):
         # Also checks that Ollama gives the token probabilities the sentence-end chance needs.
@@ -313,13 +313,13 @@ class WhisperEngine:
                 phrase.previewed_at = sent
                 text, words, _ = preview(pcm, self.url, self.language, prompt)
                 # Only what whisper stands by is translated; the subtitles show all of it.
-                trusted = settled(words, phrase.heard, self.word_p)
+                trusted = settled(words, phrase.heard, self.WORD_P)
                 phrase.heard.append([bare(word) for word, _ in words])
                 self.trace(phrase, 'preview', audio_s=round(len(pcm) / 32000, 3), text=text,
                            heard_to=phrase.audio_from + len(pcm) / 32000, latency=round(time.monotonic() - sent, 3),
                            trusted=len(trusted), low=round(min((p for _, p in trusted), default=1), 3))
                 self.out.heard(phrase, text)
-                if self.stream and re.search(r'\w', text):
+                if re.search(r'\w', text):
                     self.advance(phrase, ' '.join(word for word, _ in trusted))
         except Exception as error:
             print(f'talkey translate: preview failed: {error}', file=sys.stderr)
@@ -327,7 +327,7 @@ class WhisperEngine:
     def advance(self, phrase, text):
         """Draft the English for the phrase so far and speak what the drafts agree on."""
         if phrase.agreement is None:
-            phrase.agreement = Agreement(self.end_p)
+            phrase.agreement = Agreement(self.END_P)
         words, spoken = text.split(), phrase.agreement.spoken
         if not words_of(words[resume(phrase.agreement.said, words):]):
             self.trace(phrase, 'agree', result='dutch-unsettled', piece=None)
@@ -370,7 +370,7 @@ class WhisperEngine:
                     continue
                 self.recent.append(text)
                 self.out.heard(phrase, text, live=False)
-                words, agreement = text.split(), phrase.agreement or Agreement(self.end_p)
+                words, agreement = text.split(), phrase.agreement or Agreement(self.END_P)
                 if re.search(r'\w', ' '.join(words[resume(agreement.said, words):])):
                     sent = time.monotonic()
                     english, joined = self.translate(text, agreement.spoken, phrase.context)

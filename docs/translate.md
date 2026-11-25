@@ -450,9 +450,6 @@ This is the default engine; for the Seamless engine, see
   sentence, often before you finish it. talkey waits until it has some settled
   English, so the voice rarely stops right after a fragment. It cannot start much
   earlier without speaking guesses or short fragments.
-  `TALKEY_TRANSLATE_GUARD=1` waits for more: the English starts about a second
-  later and breaks off mid-sentence less often. `0` starts as soon as anything is
-  settled, with more and longer pauses.
 - **Pauses in the English.** Most sentences flow without a break. When the rest
   of a sentence is not settled yet, the voice waits, usually for less than a
   second and a half, with a soft tick so listeners know you are still talking.
@@ -483,17 +480,9 @@ after changing them.
 | `TALKEY_TRANSLATE_URL` | `http://127.0.0.1:11434/api/chat` | Ollama's chat endpoint |
 | `TALKEY_TRANSLATE_TTS` | `english` | The Pocket TTS model |
 | `TALKEY_TRANSLATE_TEMP` | Pocket's `0.3` | Voice temperature; `0.45` sounded most like the speaker |
-| `TALKEY_TRANSLATE_SPEED` | `0.95` | The usual pace of the voice, without changing its pitch; below 1 is slower. `1` keeps Pocket's own pace |
-| `TALKEY_TRANSLATE_SPEED_MIN`, `TALKEY_TRANSLATE_SPEED_MAX` | `0.85`, `1.15` | The slowest pace, used when no more English is coming soon, and the fastest, used when English is waiting. Set both to the usual pace for a fixed pace |
-| `TALKEY_TRANSLATE_GUARD` | `0.5` | How much English the voice must have in hand before it starts a piece, as a share of the usual wait for the next piece. `0` speaks settled English at once, which starts earlier but leaves more pauses |
-| `TALKEY_TRANSLATE_END_P` | `0.2` | How sure the model must be that a sentence can end where you are, before that sentence is spoken without waiting for more words. `1` switches this off |
-| `TALKEY_TRANSLATE_WORD_P` | `0.5` | How sure whisper must be of a word for two agreeing transcriptions to be enough; below this, a third must agree. `0` always takes two |
-| `TALKEY_TRANSLATE_STREAM` | `1` | Speak settled English before you pause; `0` waits for the pause |
-| `TALKEY_TRANSLATE_PREVIEW_MS` | `250` | How often the phrase so far is transcribed and translated |
+| `TALKEY_TRANSLATE_SPEED` | `0.95` | The usual pace of the voice, without changing its pitch; below 1 is slower. `1` keeps Pocket's own pace. The voice goes down to 0.9 times this when no more English is coming soon, and up to 1.2 times while English waits |
 | `TALKEY_TRANSLATE_TICK` | `1` | Tick softly while the voice waits for the rest of a sentence (not after one that may have ended); `0` stays silent |
 | `TALKEY_TRANSLATE_SILENCE_MS` | `500` | The pause that ends a phrase |
-| `TALKEY_TRANSLATE_QUICK_AFTER_S` | `4` | After this much speech in one phrase... |
-| `TALKEY_TRANSLATE_QUICK_SILENCE_MS` | `250` | ...this shorter pause ends it |
 | `TALKEY_TRANSLATE_MAX_S` | `15` | The longest phrase; it is cut here even without a pause |
 | `TALKEY_TRANSLATE_MONITOR` | `0` | `1` also plays the English on your own output; use headphones |
 | `TALKEY_TRANSLATE_RECORD` | `0` | `1` keeps each phrase's audio, see below |

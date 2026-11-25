@@ -37,6 +37,13 @@ TICK_AFTER_S = 0.3
 TICK_EVERY_S = 0.5
 # Phrases the HUD can scroll back through.
 HISTORY = 100
+# The voice's pace stays between these shares of its usual pace: slower while no more English is
+# coming soon, faster while English waits behind the piece being said.
+SLOWEST, FASTEST = 0.9, 1.2
+# Settled English waits while the English in hand would not last this share of the usual wait for the next piece.
+GUARD = 0.5
+# In a phrase longer than this, a shorter pause ends it, so a monologue still flows out.
+QUICK_AFTER_MS, QUICK_SILENCE_MS = 4000, 250
 
 
 def wait_sound(rate):
@@ -253,16 +260,12 @@ class Interpreter:
         start = setting('VAD_START_MS', '160', 32, 2000)
         silence = setting('TRANSLATE_SILENCE_MS', '500', 160, 10000)
         cap = setting('TRANSLATE_MAX_S', '15', 1, 600)
-        quick = setting('TRANSLATE_QUICK_SILENCE_MS', '250', 64, 10000)
-        quick_after = setting('TRANSLATE_QUICK_AFTER_S', '4', 0, 600)
-        self.endpoint = Phrases(start, silence, cap * 1000, quick, quick_after * 1000)
+        self.endpoint = Phrases(start, silence, cap * 1000, QUICK_SILENCE_MS, QUICK_AFTER_MS)
         self.preroll = deque(maxlen=math.ceil((start + 300) / FRAME_MS))
         self.frames = queue.Queue(maxsize=math.ceil(120000 / FRAME_MS))
         self.lines = queue.Queue()
         self.speed = setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5)
-        self.speed_min = setting('TRANSLATE_SPEED_MIN', '0.85', 0.5, 1.5)
-        self.speed_max = setting('TRANSLATE_SPEED_MAX', '1.15', 0.5, 1.5)
-        self.dry_guard = setting('TRANSLATE_GUARD', '0.5', 0, 10)
+        self.speed_min, self.speed_max = self.speed * SLOWEST, self.speed * FASTEST
         # Measured as the session goes: seconds from a piece being handed to the voice until the
         # next one is settled (starting from a guess), the voice's time to its first audio, and the
         # time between the engine's looks at a phrase.
@@ -367,7 +370,7 @@ class Interpreter:
             if voice_left > statistics.fmean(self.first_audio) + statistics.fmean(self.cycle):
                 # Later is better while the voice has enough: more of the English is settled by then.
                 wait = 'voice-busy'
-            elif cover < statistics.fmean(self.refill) * self.dry_guard:
+            elif cover < statistics.fmean(self.refill) * GUARD:
                 # The voice would run dry in the middle of a sentence before more is settled.
                 wait = 'would-run-dry'
             else:
@@ -661,18 +664,13 @@ def main():
         setting('VAD_START_MS', '160', 32, 2000)
         setting('TRANSLATE_SILENCE_MS', '500', 160, 10000)
         setting('TRANSLATE_MAX_S', '15', 1, 600)
-        setting('TRANSLATE_QUICK_SILENCE_MS', '250', 64, 10000)
-        setting('TRANSLATE_QUICK_AFTER_S', '4', 0, 600)
-        speed = setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5)
-        if not setting('TRANSLATE_SPEED_MIN', '0.85', 0.5, 1.5) <= speed <= setting('TRANSLATE_SPEED_MAX', '1.15', 0.5, 1.5):
-            raise ValueError('TALKEY_TRANSLATE_SPEED must be between TALKEY_TRANSLATE_SPEED_MIN and _MAX')
-        setting('TRANSLATE_GUARD', '0.5', 0, 10)
+        setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5)
         name = os.environ.get('TALKEY_TRANSLATE_ENGINE', 'whisper')
         if name not in ENGINES:
             raise ValueError('TALKEY_TRANSLATE_ENGINE must be one of: ' + ', '.join(ENGINES))
         engine = ENGINES[name]
         engine.check()
-        for name in ('STREAM', 'TICK', 'RECORD', 'TRACE'):
+        for name in ('TICK', 'RECORD', 'TRACE'):
             if os.environ.get(f'TALKEY_TRANSLATE_{name}', '1') not in ('0', '1'):
                 raise ValueError(f'TALKEY_TRANSLATE_{name} must be 0 or 1')
         if os.environ.get('TALKEY_TRANSLATE_TEMP'):
