@@ -166,10 +166,12 @@ TALKEY_SEAMLESS_PAUSE_WHISPER=1
 ```
 
 Starting translation then stops `talkey-whisper.service`, and stopping
-translation, or an error, starts it again. In between there is no dictation: the
-dictation key says `dictation is paused while Seamless translates`, and auto mode
-does not start. talkey does not unload Ollama. If a translation model is still
-loaded from an earlier session, free it with `ollama stop translategemma:4b`.
+translation, or an error, starts it again. While a dictation is still being
+recorded or transcribed, translation does not start: it says `dictation is still
+running`. In between there is no dictation: the dictation key says `dictation is
+paused while Seamless translates`, and auto mode does not start. talkey does not
+unload Ollama. If a translation model is still loaded from an earlier session,
+free it with `ollama stop translategemma:4b`.
 
 ## Install
 

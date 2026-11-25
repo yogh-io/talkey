@@ -57,6 +57,11 @@ translate_start() {
     whisper) preflight_ok || return 1 ;;
     *) [[ "${TALKEY_SEAMLESS_PAUSE_WHISPER:-0}" != 1 ]] || pause=1 ;;
   esac
+  # Stopping whisper under a take that is still recorded or transcribed would lose it.
+  if (( pause )) && (MODE=dictate; session_load dictate && dictation_active); then
+    notify 'translate: dictation is still running - try again when it is done' 5000
+    return 1
+  fi
   translate_devices || { notify 'translate: could not create the talkey English mic' 5000; return 1; }
   if auto_active; then auto_stop; fi
   if (( pause )) && ! whisper_pause; then

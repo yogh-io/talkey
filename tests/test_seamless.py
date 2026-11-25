@@ -573,6 +573,19 @@ if args[1] == 'start' and loading.exists():
         self.assertFalse((self.state/'whisper.paused').exists())
         self.assertEqual(self.notified()[-1], 'translate off')
 
+    def test_whisper_is_not_paused_under_a_dictation(self):
+        self.fake_systemctl()
+        self.env['TALKEY_SEAMLESS_PAUSE_WHISPER'] = '1'
+        self.record_notifications()
+        self.run_key('dictate', 'start')
+        self.assertNotEqual(self.run_key('translate', 'start', check=False).returncode, 0)
+        self.assertEqual(self.notified()[-1], 'translate: dictation is still running - try again when it is done')
+        self.assertEqual(self.systemctl(), [])
+        self.assertFalse(self.status()['enabled'])
+        self.run_key('dictate', 'stop')
+        self.listen()
+        self.assertEqual(self.systemctl(), ['is-active', 'stop'])
+
     def test_whisper_comes_back_when_seamless_fails(self):
         self.fake_systemctl()
         self.env['TALKEY_SEAMLESS_PAUSE_WHISPER'] = '1'
