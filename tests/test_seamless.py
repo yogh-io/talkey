@@ -355,9 +355,9 @@ class ContractTests(unittest.TestCase):
 
         out = FakeOut()
         with patch.dict(os.environ, TALKEY_TRANSLATE_PREVIEW_MS='100'), \
-                patch.object(worker, 'preview', lambda *args: words('een twee')), \
-                patch.object(worker, 'transcribe_words', lambda *args: words('een twee drie.')):
-            engine = worker.WhisperEngine(out, Translate())
+                patch.object(test_translate.engine, 'preview', lambda *args: words('een twee')), \
+                patch.object(test_translate.engine, 'transcribe_words', lambda *args: words('een twee drie.')):
+            engine = test_translate.engine.WhisperEngine(out, Translate())
             engine.start()
             phrase = worker.Phrase(time.monotonic(), 1)
             phrase.frames = [bytes(1024)] * 3

@@ -21,7 +21,8 @@ runs a background Python capture/VAD worker.
 | `lib/setup/` | Interactive setup, split into UI, dependencies, config, models, service and bindings |
 | `bin/talkey-live-pump` | Interruptible HTTP inference, two-pass agreement, atomic preview publication |
 | `bin/talkey-auto-worker`, `lib/auto.sh` | Continuous capture, Silero VAD, endpoint detection, ordered delivery and external status |
-| `bin/talkey-translate-worker`, `lib/translate.sh` | Live translation: capture, recognition, Ollama translation, Pocket TTS and the virtual microphone |
+| `bin/talkey-translate-worker`, `lib/translate.sh` | Live translation: capture, VAD, phrases, Pocket TTS, subtitles and the virtual microphone |
+| `lib/whisper_engine.py` | The default translate engine: whisper previews, Ollama translation and which English is settled |
 | `lib/seamless.py`, `bin/talkey-seamless-server` | The optional SeamlessStreaming translate engine: the worker's side, whole-word completion, and the model server in its own Python |
 | `lib/vad.py` | Silero VAD through whisper.cpp and audio-time endpoints, shared by both workers |
 | `lib/stretch.py` | Changes the pace of the translated voice without changing its pitch (WSOLA), as it streams |
@@ -166,7 +167,7 @@ unrecovered takes.
 `translate.current` selects the run directory, fenced the same way as auto mode.
 The worker owns no takes and types nothing. Its main thread captures audio and
 runs VAD. An engine turns each phrase into English; the default one,
-`WhisperEngine`, works as follows. While a phrase is heard, a preview worker transcribes it every 250 ms
+`WhisperEngine` (`lib/whisper_engine.py`), works as follows. While a phrase is heard, a preview worker transcribes it every 250 ms
 with whisper's `verbose_json`, and translates the words it can trust: the start
 that this and the previous transcript share. A word whose probability (that of
 its least likely token) is below `TALKEY_TRANSLATE_WORD_P` must also be in the

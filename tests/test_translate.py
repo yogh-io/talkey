@@ -23,6 +23,7 @@ loader = importlib.machinery.SourceFileLoader('translate_worker', str(ROOT/'bin/
 spec = importlib.util.spec_from_loader(loader.name, loader)
 worker = importlib.util.module_from_spec(spec)
 loader.exec_module(worker)
+import whisper_engine as engine  # noqa: E402  (the worker put lib/ on the path)
 
 AUDIO = r'''#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -69,7 +70,7 @@ class PhrasesTests(unittest.TestCase):
 
 class AgreementTests(unittest.TestCase):
     def test_a_guessed_verb_is_never_spoken(self):
-        agreement = worker.Agreement()
+        agreement = engine.Agreement()
         self.assertIsNone(agreement.offer('We moeten volgende week de release'.split(),
                                           'We need to release it next week'))
         self.assertEqual(agreement.decision['result'], 'first-draft')
@@ -80,13 +81,13 @@ class AgreementTests(unittest.TestCase):
         self.assertEqual(agreement.spoken, 'We need to')
 
     def test_a_stable_head_is_settled_although_the_tail_changed(self):
-        agreement = worker.Agreement()
+        agreement = engine.Agreement()
         agreement.offer('Morgen ga ik'.split(), 'Tomorrow I will')
         self.assertEqual(agreement.offer('Morgen ga ik even'.split(), "Tomorrow I'll just"), 'Tomorrow')
         self.assertEqual(agreement.decision, {'result': 'settled', 'piece': 'Tomorrow'})
 
     def test_settled_english_is_spoken_as_the_later_draft_writes_it(self):
-        agreement = worker.Agreement()
+        agreement = engine.Agreement()
         self.assertIsNone(agreement.offer(['Hallo', 'allemaal'], 'Hello everyone'))
         self.assertEqual(agreement.offer('Hallo allemaal ik deel'.split(), 'Hello everyone, I am sharing'),
                          'Hello everyone,')
@@ -96,7 +97,7 @@ class AgreementTests(unittest.TestCase):
                          {'result': 'spoken', 'piece': 'Hello everyone,', 'dutch': 'Hallo allemaal', 'via': 'agreed'})
 
     def test_nothing_is_settled_when_more_dutch_changes_the_first_word(self):
-        agreement = worker.Agreement()
+        agreement = engine.Agreement()
         agreement.offer(['Hallo', 'allemaal'], 'Hello everyone')
         self.assertIsNone(agreement.offer('Hallo allemaal ik deel'.split(), 'Hi all, I am sharing'))
         self.assertEqual(agreement.decision['result'], 'no-agreement')
@@ -104,7 +105,7 @@ class AgreementTests(unittest.TestCase):
         self.assertEqual(agreement.decision['result'], 'dutch-changed')
 
     def test_a_later_piece_continues_the_spoken_english(self):
-        agreement = worker.Agreement()
+        agreement = engine.Agreement()
         agreement.offer(['Hallo', 'allemaal'], 'Hello everyone')
         agreement.offer('Hallo allemaal ik deel'.split(), 'Hello everyone, I am sharing')
         agreement.commit()
@@ -114,7 +115,7 @@ class AgreementTests(unittest.TestCase):
                          'I am sharing my screen,')
 
     def test_a_draft_that_carries_on_inside_the_last_word_joins_it(self):
-        agreement = worker.Agreement()
+        agreement = engine.Agreement()
         agreement.offer('Morgen ga ik'.split(), 'Tomorrow I')
         agreement.offer('Morgen ga ik even'.split(), 'Tomorrow I will')
         agreement.commit()
@@ -125,7 +126,7 @@ class AgreementTests(unittest.TestCase):
         self.assertEqual(agreement.spoken, "Tomorrow I'll just")
 
     def test_a_sentence_the_model_says_may_end_is_spoken_without_more_dutch(self):
-        agreement = worker.Agreement(.2)
+        agreement = engine.Agreement(.2)
         self.assertEqual(agreement.offer('Ik deel even mijn scherm.'.split(), 'I am sharing my screen.', .6),
                          'I am sharing my screen.')
         agreement.commit()
@@ -133,12 +134,12 @@ class AgreementTests(unittest.TestCase):
         self.assertEqual(agreement.said, 'Ik deel even mijn scherm.'.split())
 
     def test_an_open_clause_waits_for_more_dutch(self):
-        agreement = worker.Agreement(.2)
+        agreement = engine.Agreement(.2)
         self.assertIsNone(agreement.offer('Ik heb gisteren met de klant'.split(), 'Yesterday I spoke with the client', .01))
         self.assertEqual(agreement.decision['result'], 'first-draft')
 
     def test_a_whole_sentence_stays_settled_while_its_dutch_stays(self):
-        agreement = worker.Agreement(.2)
+        agreement = engine.Agreement(.2)
         heard = 'Ik deel even mijn scherm.'.split()
         self.assertEqual(agreement.offer(heard, 'I am sharing my screen.', .6), 'I am sharing my screen.')
         # The next sentence makes the model reword the first one; the whole draft still stands.
@@ -147,7 +148,7 @@ class AgreementTests(unittest.TestCase):
         self.assertEqual(agreement.settled[-1], 'end')
 
     def test_a_whole_sentence_is_dropped_when_its_dutch_changes(self):
-        agreement = worker.Agreement(.2)
+        agreement = engine.Agreement(.2)
         agreement.offer('Ik deel even mijn scherm.'.split(), 'I am sharing my screen.', .6)
         self.assertIsNone(agreement.offer('Ik deel even mijn schermen'.split(), 'I am sharing my screens', .01))
         self.assertIsNone(agreement.whole)
@@ -156,15 +157,15 @@ class AgreementTests(unittest.TestCase):
 class SettledTests(unittest.TestCase):
     def test_words_two_transcripts_agree_on_are_trusted_up_to_a_change(self):
         words = [('Nee,', .9), ('dan', .9), ('bel', .9), ('je', .9), ('morgen', .9)]
-        self.assertEqual(worker.settled(words, [['nee', 'dan', 'bel', 'ik']], .5), words[:3])
-        self.assertEqual(worker.settled(words, [], .5), [])
+        self.assertEqual(engine.settled(words, [['nee', 'dan', 'bel', 'ik']], .5), words[:3])
+        self.assertEqual(engine.settled(words, [], .5), [])
 
     def test_a_word_whisper_is_unsure_of_needs_a_third_transcript(self):
         words = [('Nee,', .9), ('dan', .3), ('bel', .9), ('ik', .9)]
-        self.assertEqual(worker.settled(words, [['nee', 'dan', 'bel', 'ik']], .5), words[:1])
-        self.assertEqual(worker.settled(words, [['nee', 'dan', 'bel'], ['nee', 'dan', 'bel', 'ik']], .5), words)
+        self.assertEqual(engine.settled(words, [['nee', 'dan', 'bel', 'ik']], .5), words[:1])
+        self.assertEqual(engine.settled(words, [['nee', 'dan', 'bel'], ['nee', 'dan', 'bel', 'ik']], .5), words)
         # Three transcripts must agree on everything up to that word.
-        self.assertEqual(worker.settled(words, [['nee', 'of'], ['nee', 'dan', 'bel', 'ik']], .5), words[:1])
+        self.assertEqual(engine.settled(words, [['nee', 'of'], ['nee', 'dan', 'bel', 'ik']], .5), words[:1])
 
 
 class WordsTests(unittest.TestCase):
@@ -182,10 +183,10 @@ class WordsTests(unittest.TestCase):
 class ResumeTests(unittest.TestCase):
     def test_finds_the_end_of_what_was_said_despite_rewording(self):
         said = 'een twee drie vier,'.split()
-        self.assertEqual(worker.resume(said, 'Een twee drie vier, vijf zes.'.split()), 4)
-        self.assertEqual(worker.resume(said, 'een twee drieë vier, vijf'.split()), 4)
-        self.assertEqual(worker.resume(said, 'een twee drie'.split()), 3)
-        self.assertEqual(worker.resume([], 'een twee'.split()), 0)
+        self.assertEqual(engine.resume(said, 'Een twee drie vier, vijf zes.'.split()), 4)
+        self.assertEqual(engine.resume(said, 'een twee drieë vier, vijf'.split()), 4)
+        self.assertEqual(engine.resume(said, 'een twee drie'.split()), 3)
+        self.assertEqual(engine.resume([], 'een twee'.split()), 0)
 
 
 class OnAirTests(unittest.TestCase):
@@ -290,7 +291,7 @@ class TimingTests(unittest.TestCase):
             def seconds(self, text):
                 return len(text) * .06
 
-        self.interpreter = worker.Interpreter(None, None, lambda out: worker.WhisperEngine(out, Translate()))
+        self.interpreter = worker.Interpreter(None, None, lambda out: engine.WhisperEngine(out, Translate()))
         self.interpreter.voice = Voice()
         self.interpreter.first_audio.append(.25)
         self.phrase = worker.Phrase(time.monotonic(), 1)
@@ -378,7 +379,7 @@ class TranslatorTests(unittest.TestCase):
         del os.environ['TALKEY_TRANSLATE_URL']
 
     def test_recent_phrases_are_context_and_quotes_are_dropped(self):
-        translate = worker.Translator()
+        translate = engine.Translator()
         self.assertEqual(translate('warm'), ('EN 1', False))
         for i in range(2, 6):
             self.assertEqual(translate(f'nl {i}'), (f'EN {i}', False))
@@ -391,7 +392,7 @@ class TranslatorTests(unittest.TestCase):
         self.assertFalse(self.requests[-1]['stream'])
 
     def test_the_sentence_end_chance_is_the_model_s_closing_tokens(self):
-        translate = worker.Translator()
+        translate = engine.Translator()
         translate.remember('Ik ben er.', 'I am here.')
         self.assertAlmostEqual(translate.ends('Ik bel je morgen even op.'), .55)
         body = self.generated[-1]
@@ -404,10 +405,10 @@ class TranslatorTests(unittest.TestCase):
     def test_no_token_probabilities_is_an_error(self):
         self.logprobs = None
         with self.assertRaisesRegex(RuntimeError, 'token probabilities'):
-            worker.Translator().ends('Hallo.')
+            engine.Translator().ends('Hallo.')
 
     def test_a_reply_that_carries_on_inside_the_last_word_says_so(self):
-        translate = worker.Translator()
+        translate = engine.Translator()
         self.reply = "'ll show it."
         self.assertEqual(translate('Ik zal het laten zien.', spoken='I'), ("'ll show it.", True))
         self.reply = ' will show it.'
@@ -422,7 +423,7 @@ class TranslatorTests(unittest.TestCase):
             env = {'TALKEY_TRANSLATE_NOTES': str(notes), 'TALKEY_STATE_DIR': str(state)}
             os.environ.update(env)
             self.addCleanup(lambda: [os.environ.pop(name) for name in env])
-            translate = worker.Translator()
+            translate = engine.Translator()
             self.assertEqual(translate.context(), '')
             notes.write_text('Weekly planning with the design team.\n')
             (state/'translate.context').write_text('They asked about the release date.\n')
@@ -438,7 +439,7 @@ class TranslatorTests(unittest.TestCase):
             self.assertTrue(translate.context().startswith('Another meeting.'))
 
     def test_spoken_english_is_continued_without_its_sentence_end(self):
-        translate = worker.Translator()
+        translate = engine.Translator()
         self.assertEqual(translate('heel de zin', spoken="Okay, I'm getting."), ('EN 1', False))
         # A prefill that ends a sentence makes the model stop, though the Dutch goes on.
         self.assertEqual(self.requests[-1]['messages'][-1], {'role': 'assistant', 'content': "Okay, I'm getting"})
@@ -504,8 +505,8 @@ class TranslateRuntimeTests(unittest.TestCase):
         lines = path.read_text().splitlines()
         if len(lines) > 1: path.write_text(''.join(line + '\\n' for line in lines[1:]))
         return words(lines[0])
-    ns['main'].__globals__.update(Silero=FakeVad, Voice=FakeVoice, Translator=FakeTranslator,
-                                  transcribe_words=heard, preview=previewed)
+    ns['main'].__globals__.update(Silero=FakeVad, Voice=FakeVoice)
+    vars(sys.modules['whisper_engine']).update(Translator=FakeTranslator, transcribe_words=heard, preview=previewed)
     sys.argv=sys.argv[1:]
     sys.exit(ns['main']())
 '''

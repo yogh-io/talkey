@@ -94,7 +94,7 @@ package() {
   install -Dm644 -t "$pkgdir/usr/share/$_name" vocabulary.txt
   install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/*.sh
   install -Dm644 -t "$pkgdir/usr/share/$_name/lib" lib/smart_turn.py lib/speech.py lib/commands.py lib/vad.py lib/stretch.py \
-    lib/captions.py lib/seamless.py
+    lib/captions.py lib/seamless.py lib/whisper_engine.py
   install -Dm644 -t "$pkgdir/usr/share/$_name/lib/vendor" \
     lib/vendor/*.py lib/vendor/LICENSE.* lib/vendor/README.md
   install -Dm644 -t "$pkgdir/usr/share/$_name/lib/setup" lib/setup/*.sh
