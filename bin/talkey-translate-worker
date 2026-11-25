@@ -586,6 +586,49 @@ class Interpreter:
             piece.update({key: round(value + offset, 3) for key, value in times.items()})
             self.show()
 
+    def heard(self, phrase, text, live=True):
+        """Publish what was heard of the phrase; live while it may still change."""
+        with self.lock:
+            phrase.shown.update(dutch=text, live=live)
+            self.show()
+
+    def gate(self, phrase, piece):
+        """Why settled English waits for the voice, or None when it goes now; with the voice's audio
+        left, the English in hand with this piece, and the usual wait for the next piece."""
+        now = time.monotonic()
+        voice_left, cover, wait = self.voice_end - now, 0.0, None
+        if piece:
+            if phrase.committed_at is not None:
+                self.refill.append(now - phrase.committed_at)
+                phrase.committed_at = None
+            # Seconds of English in hand with this piece, if the voice slows to its slowest pace.
+            cover = max(0.0, voice_left) + self.voice.seconds(piece) / self.speed_min
+            if voice_left > statistics.fmean(self.first_audio) + statistics.fmean(self.cycle):
+                # Later is better while the voice has enough: more of the English is settled by then.
+                wait = 'voice-busy'
+            elif cover < statistics.fmean(self.refill) * self.dry_guard:
+                # The voice would run dry in the middle of a sentence before more is settled.
+                wait = 'would-run-dry'
+            else:
+                phrase.committed_at = now
+        return wait, voice_left, cover, statistics.fmean(self.refill)
+
+    def finish(self, phrase):
+        """No more English for this phrase."""
+        with self.lock:
+            phrase.shown['done'] = True
+            self.show()
+        phrase.segments.put(None)
+
+    def drop(self, phrase):
+        """Nothing was said: the phrase leaves the subtitles."""
+        with self.lock:
+            kept = [shown for shown in self.subtitles if shown is not phrase.shown]
+            self.subtitles.clear()
+            self.subtitles.extend(kept)
+            self.show()
+        phrase.segments.put(None)
+
     def prompt(self, phrase):
         """Whisper's prompt: the conversation context, then the last sentences, which whisper keeps if it must cut."""
         return ' '.join(filter(None, [phrase.context.replace('\n', ' '), *self.recent])) or None
@@ -606,9 +649,7 @@ class Interpreter:
                 self.trace(phrase, 'preview', audio_s=round(len(pcm) / 32000, 3), text=text,
                            heard_to=phrase.audio_from + len(pcm) / 32000, latency=round(time.monotonic() - sent, 3),
                            trusted=len(trusted), low=round(min((p for _, p in trusted), default=1), 3))
-                with self.lock:
-                    phrase.shown['dutch'] = text
-                    self.show()
+                self.heard(phrase, text)
                 if self.stream and re.search(r'\w', text):
                     self.advance(phrase, ' '.join(word for word, _ in trusted))
         except Exception as error:
@@ -634,29 +675,15 @@ class Interpreter:
                        latency=round(time.monotonic() - sent, 3))
         agreement = phrase.agreement
         piece = agreement.offer(words, draft, ends, joined)
-        now = time.monotonic()
-        voice_left, cover = self.voice_end - now, 0.0
-        if piece and phrase.committed_at is not None:
-            self.refill.append(now - phrase.committed_at)
-            phrase.committed_at = None
-        if piece:
-            # Seconds of English in hand with this piece, if the voice slows to its slowest pace.
-            cover = max(0.0, voice_left) + self.voice.seconds(piece) / self.speed_min
-            if voice_left > statistics.fmean(self.first_audio) + statistics.fmean(self.cycle):
-                # Later is better while the voice has enough: more of the English is settled by then.
-                agreement.hold('voice-busy', piece)
-                piece = None
-            elif cover < statistics.fmean(self.refill) * self.dry_guard:
-                # The voice would run dry in the middle of a sentence before more is settled.
-                agreement.hold('would-run-dry', piece)
-                piece = None
-            else:
-                piece = agreement.commit()
-                phrase.committed_at = now
+        wait, voice_left, cover, refill = self.gate(phrase, piece)
+        if piece and wait:
+            agreement.hold(wait, piece)
+            piece = None
+        elif piece:
+            piece = agreement.commit()
         self.trace(phrase, 'agree', voice_left=round(voice_left, 3), ends=round(ends, 3), **agreement.decision)
         if piece:
-            self.queue(phrase, *piece, last=False, cover=round(cover, 3),
-                       refill=round(statistics.fmean(self.refill), 3))
+            self.queue(phrase, *piece, last=False, cover=round(cover, 3), refill=round(refill, 3))
 
     def call(self, action):
         child = subprocess.Popen([self.command, '_translate', action], env=dict(os.environ))
@@ -694,17 +721,10 @@ class Interpreter:
                 phrase.closed = True
                 self.trace(phrase, 'closed')
                 if not re.search(r'\w', text) or HALLUCINATION.search(text):
-                    with self.lock:
-                        kept = [shown for shown in self.subtitles if shown is not phrase.shown]
-                        self.subtitles.clear()
-                        self.subtitles.extend(kept)
-                        self.show()
-                    phrase.segments.put(None)
+                    self.drop(phrase)
                     continue
                 self.recent.append(text)
-                with self.lock:
-                    phrase.shown.update(dutch=text, live=False)
-                    self.show()
+                self.heard(phrase, text, live=False)
                 words, agreement = text.split(), phrase.agreement or Agreement(self.end_p)
                 if re.search(r'\w', ' '.join(words[resume(agreement.said, words):])):
                     sent = time.monotonic()
@@ -713,10 +733,7 @@ class Interpreter:
                                latency=round(time.monotonic() - sent, 3))
                     if english:
                         self.queue(phrase, english, joined, last=True)
-                with self.lock:
-                    phrase.shown['done'] = True
-                    self.show()
-                phrase.segments.put(None)
+                self.finish(phrase)
                 self.translate.remember(text, phrase.english)
 
     def send(self, pcm, record):
