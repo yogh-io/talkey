@@ -3,6 +3,7 @@
 TRANSLATE_SINK="${TALKEY_TRANSLATE_SINK:-talkey_translate}"
 TRANSLATE_MIC="${TALKEY_TRANSLATE_MIC:-talkey_translate_mic}"
 TRANSLATE_ENGINE="${TALKEY_TRANSLATE_ENGINE:-whisper}"
+WHISPER_UNIT=talkey-whisper.service
 translate_load() { TRANSLATE_DIR="$(readlink -f "$STATE_DIR/translate.current" 2>/dev/null)"; [[ -d "$TRANSLATE_DIR" ]]; }
 translate_active() { translate_load && process_alive "$TRANSLATE_DIR/worker.pid"; }
 translate_state() { printf '%s\n' "$1" > "$TRANSLATE_DIR/state"; state_changed; }
@@ -22,10 +23,23 @@ translate_devices() {
   fi
 }
 
+# Seamless needs the GPU memory whisper holds. With TALKEY_SEAMLESS_PAUSE_WHISPER=1 it gets it
+# until translate stops; only a unit this stopped is started again.
+whisper_pause() {
+  command -v systemctl > /dev/null && systemctl --user is-active --quiet "$WHISPER_UNIT" || return 0
+  : > "$STATE_DIR/whisper.paused"
+  systemctl --user stop "$WHISPER_UNIT" || { rm -f "$STATE_DIR/whisper.paused"; return 1; }
+}
+
+whisper_resume() {
+  [[ -f "$STATE_DIR/whisper.paused" ]] || return 0
+  systemctl --user start "$WHISPER_UNIT" && rm -f "$STATE_DIR/whisper.paused"
+}
+
 translate_start() {
   gesture_cancel
   translate_active && return 0
-  local python="${TALKEY_TRANSLATE_PYTHON:-python3}" source="$AUDIO_SOURCE" reason
+  local python="${TALKEY_TRANSLATE_PYTHON:-python3}" source="$AUDIO_SOURCE" reason pause=0
   command -v "$python" > /dev/null || { echo "talkey translate: Python not found: $python" >&2; return 1; }
   [[ "$source" != default ]] || source="$(pactl get-default-source 2> /dev/null || true)"
   if [[ "$source" == "$TRANSLATE_MIC" ]]; then
@@ -39,9 +53,16 @@ translate_start() {
     notify "translate mode unavailable: ${reason#talkey translate: }" 8000
     return 1
   fi
-  preflight_ok || return 1
+  case "$TRANSLATE_ENGINE" in
+    whisper) preflight_ok || return 1 ;;
+    *) [[ "${TALKEY_SEAMLESS_PAUSE_WHISPER:-0}" != 1 ]] || pause=1 ;;
+  esac
   translate_devices || { notify 'translate: could not create the talkey English mic' 5000; return 1; }
   if auto_active; then auto_stop; fi
+  if (( pause )) && ! whisper_pause; then
+    notify "translate: could not stop $WHISPER_UNIT to make room for Seamless" 5000
+    return 1
+  fi
   rm -f "$STATE_DIR/translate.showing" "$STATE_DIR/translate.subtitles" "$STATE_DIR/translate.raw" \
     "$STATE_DIR/translate.scroll" "$STATE_DIR/translate.context"
   TRANSLATE_DIR="$(mktemp -d "$STATE_DIR/translate.XXXXXXXX")"
@@ -56,7 +77,11 @@ translate_start() {
     "$python" "$SCRIPT_DIR/talkey-translate-worker" 9>&- < /dev/null >> "$STATE_DIR/log" 2>&1 &
   process_save "$!" "$TRANSLATE_DIR/worker.pid" || { translate_state error; return 1; }
   camera_follow_translate
-  notify 'translate starting - loading the voice' 3000
+  if [[ -f "$STATE_DIR/whisper.paused" ]]; then
+    notify 'translate starting - dictation is paused until you stop translating' 5000
+  else
+    notify 'translate starting - loading the voice' 3000
+  fi
 }
 
 translate_stop() {
@@ -68,7 +93,11 @@ translate_stop() {
   # A killed worker cannot remove its marker; the HUD would stay open.
   rm -f "$STATE_DIR/translate.showing" "$STATE_DIR/translate.raw"
   translate_state off
-  notify 'translate off'
+  if whisper_resume; then
+    notify 'translate off'
+  else
+    notify "translate off - $WHISPER_UNIT did not start again; run: talkey doctor" 5000
+  fi
   [[ "$previous" == off ]] || play_sound auto-off
 }
 
@@ -102,6 +131,13 @@ translate_event() {
     error)
       translate_state error
       local reason; reason="$(head -n 1 "$TRANSLATE_DIR/error" 2> /dev/null)"
-      notify "translate stopped: ${reason:-see the talkey runtime log}" 8000 ;;
+      notify "translate stopped: ${reason:-see the talkey runtime log}" 8000
+      # Whisper starts again once the worker, and Seamless with it, has let go of the GPU.
+      if [[ -f "$STATE_DIR/whisper.paused" ]]; then
+        (
+          for ((i = 0; i < 100; i++)); do process_alive "$TRANSLATE_DIR/worker.pid" || break; sleep 0.1; done
+          whisper_resume
+        ) 9>&- > /dev/null 2>&1 &
+      fi ;;
   esac
 }

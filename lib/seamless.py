@@ -54,6 +54,8 @@ def server():
 
 def check():
     """The settings and files the engine needs, without loading any of it."""
+    if os.environ.get('TALKEY_SEAMLESS_PAUSE_WHISPER', '0') not in ('0', '1'):
+        raise ValueError('TALKEY_SEAMLESS_PAUSE_WHISPER must be 0 or 1')
     language = os.environ.get('TALKEY_TRANSLATE_FROM', 'nl')
     if language not in CODES:
         raise ValueError('the Seamless engine needs TALKEY_TRANSLATE_FROM set to one of: ' + ', '.join(CODES))

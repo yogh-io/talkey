@@ -17,11 +17,23 @@ play_sound() {
   "$PLAYER" "$SOUND_DIR/$1.wav" >/dev/null 2>&1 9>&- &
 }
 
+whisper_answers() { curl -fsS --max-time 2 -o /dev/null "${WHISPER_URL%/inference}/" 2>/dev/null; }
+
 preflight_ok() {
-  curl -fsS --max-time 2 -o /dev/null "${WHISPER_URL%/inference}/" 2>/dev/null && return 0
-  overlay_state error; overlay_body 'no speech server - run: talkey doctor'
+  whisper_answers && return 0
+  local body='no speech server - run: talkey doctor' message="talkey: no speech server - run 'talkey doctor'"
+  if [[ -f "$STATE_DIR/whisper.paused" ]]; then
+    if translate_active; then
+      body='dictation is paused while Seamless translates'; message="$body"
+    elif whisper_resume; then
+      # A translate session that ended without starting whisper again, killed for example.
+      local deadline=$((SECONDS + 10))
+      while (( SECONDS < deadline )); do whisper_answers && return 0; sleep 0.2; done
+    fi
+  fi
+  overlay_state error; overlay_body "$body"
   : > "$ALERT"; state_changed
-  notify "talkey: no speech server - run 'talkey doctor'" 5000
+  notify "$message" 5000
   return 1
 }
 

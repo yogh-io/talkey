@@ -494,6 +494,69 @@ class SeamlessRuntimeTests(unittest.TestCase):
         self.wait_for(lambda: 'translate stopped: not enough GPU memory for Seamless: 100 of 8000 MiB free'
                       in self.notified())
 
+    def fake_systemctl(self, active=True):
+        fake = self.commands/'systemctl'
+        fake.write_text(f'''#!{sys.executable}
+import json, os, pathlib, sys
+root = pathlib.Path(os.environ['TEST_ROOT'])
+args = sys.argv[1:]
+with (root/'systemctl').open('a') as f: f.write(json.dumps(args) + '\\n')
+unit = root/'whisper-active'
+if args[1] == 'is-active': sys.exit(0 if unit.exists() else 3)
+if args[1] == 'stop': unit.unlink(missing_ok=True)
+if args[1] == 'start': unit.touch()
+''')
+        fake.chmod(0o755)
+        if active:
+            (self.root/'whisper-active').touch()
+        # The speech server answers only while its unit runs.
+        curl = self.commands/'curl'
+        curl.write_text(curl.read_text().replace("if '-o' in args: sys.exit(0)",
+                                                 "if '-o' in args: sys.exit(0 if (root/'whisper-active').exists() else 7)"))
+
+    def systemctl(self):
+        path = self.root/'systemctl'
+        calls = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        self.assertTrue(all(call[0] == '--user' and call[-1] == 'talkey-whisper.service' for call in calls))
+        return [call[1] for call in calls]
+
+    def test_whisper_pauses_only_when_asked_and_comes_back_when_translate_stops(self):
+        self.fake_systemctl()
+        self.listen()
+        self.run_key('translate', 'stop')
+        self.assertEqual(self.systemctl(), [])
+        self.env['TALKEY_SEAMLESS_PAUSE_WHISPER'] = '1'
+        self.record_notifications()
+        self.listen()
+        self.assertEqual(self.systemctl(), ['is-active', 'stop'])
+        self.assertTrue((self.state/'whisper.paused').exists())
+        self.assertIn('translate starting - dictation is paused until you stop translating', self.notified())
+        self.run_key('dictate', 'start', check=False)
+        self.assertEqual(self.notified()[-1], 'dictation is paused while Seamless translates')
+        self.run_key('translate', 'stop')
+        self.assertEqual(self.systemctl(), ['is-active', 'stop', 'start'])
+        self.assertFalse((self.state/'whisper.paused').exists())
+        self.assertEqual(self.notified()[-1], 'translate off')
+
+    def test_whisper_comes_back_when_seamless_fails(self):
+        self.fake_systemctl()
+        self.env['TALKEY_SEAMLESS_PAUSE_WHISPER'] = '1'
+        (self.root/'seamless-fail-start').touch()
+        self.run_key('translate', 'start')
+        self.wait_for(lambda: self.status()['state'] == 'error')
+        self.wait_for(lambda: not (self.state/'whisper.paused').exists())
+        self.assertEqual(self.systemctl(), ['is-active', 'stop', 'start'])
+        self.assertTrue((self.root/'whisper-active').exists())
+
+    def test_the_next_dictation_starts_whisper_that_a_killed_session_left_paused(self):
+        self.fake_systemctl(active=False)
+        self.status()
+        (self.state/'whisper.paused').touch()
+        self.run_key('dictate', 'start')
+        self.assertEqual(self.systemctl(), ['start'])
+        self.assertFalse((self.state/'whisper.paused').exists())
+        self.run_key('dictate', 'stop')
+
     def test_the_check_names_what_is_missing(self):
         self.record_notifications()
 
@@ -501,8 +564,12 @@ class SeamlessRuntimeTests(unittest.TestCase):
             self.assertNotEqual(self.run_key('translate', 'start', check=False).returncode, 0)
             self.assertFalse(self.status()['enabled'])
             self.assertIn(reason, self.notified()[-1])
-            self.assertTrue(self.notified()[-1].endswith('run: talkey-setup seamless') or 'TALKEY_TRANSLATE_FROM' in reason)
+            # A setting names itself; anything missing names the step that installs it.
+            self.assertTrue(self.notified()[-1].endswith('run: talkey-setup seamless') or 'TALKEY_' in reason)
 
+        self.env['TALKEY_SEAMLESS_PAUSE_WHISPER'] = 'yes'
+        refused('TALKEY_SEAMLESS_PAUSE_WHISPER must be 0 or 1')
+        del self.env['TALKEY_SEAMLESS_PAUSE_WHISPER']
         self.env['TALKEY_TRANSLATE_FROM'] = 'auto'
         refused('needs TALKEY_TRANSLATE_FROM set to one of: nl, de, fr, es, it, pt')
         del self.env['TALKEY_TRANSLATE_FROM']
