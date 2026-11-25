@@ -280,7 +280,8 @@ class EngineTests(unittest.TestCase):
                                      ('gate', 'all.'), ('queue', 'all.', False, True)])
         self.assertEqual(len(out.cycle), 3)
         agreed = [fields for event, fields in out.events if event == 'agree']
-        self.assertEqual([(a['result'], a['piece']) for a in agreed], [('spoken', 'Good morning'), ('spoken', 'all.')])
+        self.assertEqual([(a['result'], a['piece'], a['eot']) for a in agreed],
+                         [('spoken', 'Good morning', False), ('spoken', 'all.', True)])
 
     def test_a_held_piece_grows_and_is_offered_again_on_every_step(self):
         out = FakeOut(waits=['would-run-dry', 'voice-busy', 'voice-busy'])
@@ -495,7 +496,7 @@ class SeamlessRuntimeTests(unittest.TestCase):
         # The audio the model had heard, timed like the rest of the trace from the first word.
         step = next(event for event in self.events() if event['event'] == 'step')
         self.assertGreater(step['heard_to'], 0)
-        self.assertIs(step['ends'], False)
+        self.assertIs(step['eot'], False)
 
     def test_a_server_that_dies_stops_the_session_without_another_engine(self):
         self.listen()

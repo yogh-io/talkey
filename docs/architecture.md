@@ -275,10 +275,11 @@ the voice's first audio and the play schedule, and ticks. Times are seconds
 since the phrase's first word on the audio clock: capture frame k maps to the
 earliest monotonic time it could have arrived, so a busy main loop does not
 shift them. The Seamless engine writes `step` (`heard_to`, `compute`, `text`,
-`ends`), `source` (`text`), `agree` (`result` `spoken`, `voice-busy` or
-`would-run-dry`, `piece`, `voice_left`, `ends`), `closed` and `final` (`text`,
-`compute`) instead of the previews and drafts; the events of the voice are the
-same for both.
+`eot`: whether the model's next token is end of text), `source` (`text`),
+`agree` (`result` `spoken`, `voice-busy` or `would-run-dry`, `piece`,
+`voice_left`, `eot`), `closed` and `final` (`text`, `compute`) instead of the
+previews and drafts; the events of the voice are the same for both. The whisper
+engine's `agree` has `ends`, the chance that a sentence ends there, instead.
 
 The worker publishes what the HUD shows in `$STATE_DIR`, each file replaced with
 an atomic rename:
