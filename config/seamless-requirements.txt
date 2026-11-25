@@ -1,0 +1,8 @@
+# The optional Seamless translate engine, in a Python 3.10 environment of its own. Tested together.
+# talkey-setup seamless installs it; the weights come separately and are CC-BY-NC-4.0 (non-commercial).
+torch==2.2.2
+torchaudio==2.2.2
+fairseq2==0.2.1
+numpy==1.26.4
+simuleval==1.1.4
+seamless_communication @ git+https://github.com/facebookresearch/seamless_communication@9a081e935c29c6b1e0e05bcbf3fcb623ad306524

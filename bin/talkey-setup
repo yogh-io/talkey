@@ -10,7 +10,9 @@
 # It installs nothing. Your package manager is yours, and a model is an install
 # whichever way it arrives - so this says which one and how, with the official
 # links, and leaves the running of it to you. What it does do is enable talkey's
-# own systemd unit, after asking, and write talkey's own config files.
+# own systemd unit, after asking, and write talkey's own config files. The one
+# exception is `seamless`, which you run by name: after asking, it puts the
+# optional engine's Python and weights in a folder of their own.
 #
 #   talkey-setup            # everything, in order
 #   talkey-setup model      # just the model
@@ -19,6 +21,8 @@
 #   talkey-setup vad        # check the auto-mode speech detector and show model instructions
 #   talkey-setup turn       # check optional Smart Turn and show local setup instructions
 #   talkey-setup translate  # set up live translation in your own voice
+#   talkey-setup seamless   # optional: download the SeamlessStreaming translate engine
+#                           # (its weights are CC-BY-NC-4.0, non-commercial; not part of the rest)
 #
 # Safe to re-run: every step reports what is already done and moves on.
 #
@@ -37,7 +41,7 @@ done
 CONFIG_DIR="$(dirname "$TALKEY_CONFIG")"
 MODEL_DIR="${WHISPER_MODEL_DIR:-$HOME/.local/share/whisper}"
 
-for module in ui deps config models service bindings keys translate; do
+for module in ui deps config models service bindings keys translate seamless; do
   . "$DATA_DIR/lib/setup/$module.sh"
 done
 
@@ -50,7 +54,7 @@ main() {
       # the one subcommand that recovers a failed run.
       awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$(readlink -f "$0")"
       exit 0 ;;
-    all|model|service|keys)
+    all|model|service|keys|seamless)
       # These ask questions. Run blind - a pacman hook, a script - they would
       # either hang on a read or silently take defaults nobody chose.
       [[ -t 0 ]] || die "'$what' is interactive - run it in a terminal" ;;
@@ -64,7 +68,8 @@ main() {
     vad)     step_vad; return $? ;;
     turn)    step_turn; return $? ;;
     translate) step_translate; return $? ;;
-    *) die "unknown step '$what' - try: all, model, service, keys, deps, vad, turn, translate" ;;
+    seamless) step_seamless; return $? ;;
+    *) die "unknown step '$what' - try: all, model, service, keys, deps, vad, turn, translate, seamless" ;;
   esac
   # The ending reports what actually happened. Anything a step could not finish
   # is listed, in the order it has to be done, with the command that fixes it.

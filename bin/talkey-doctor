@@ -39,6 +39,8 @@ warn() { printf '  %s~%s %s\n' "$YELLOW" "$R" "$1"; [[ -n "${2:-}" ]] && printf 
 sec()  { (( QUIET )) || printf '\n%s%s%s\n' "$B" "$1" "$R"; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+. "$DATA_DIR/lib/session.sh"
+. "$DATA_DIR/lib/translate.sh"
 
 # --- 1. session ------------------------------------------------------------
 # First because nothing downstream matters if keystrokes cannot be delivered.
@@ -101,7 +103,9 @@ sec "speech-to-text server"
 URL="$(talkey_whisper_url)"
 BASE="${URL%/inference}"
 UNIT=talkey-whisper.service
-if curl -fsS --max-time 3 -o /dev/null "$BASE/" 2>/dev/null; then
+if [[ -f "$STATE_DIR/whisper.paused" ]] && translate_active; then
+  note "$UNIT is paused while Seamless translates (TALKEY_SEAMLESS_PAUSE_WHISPER=1); it starts again when translate stops"
+elif curl -fsS --max-time 3 -o /dev/null "$BASE/" 2>/dev/null; then
   ok "answering at $BASE"
   # A server started with --no-timestamps cuts the audio into fixed 30 second
   # blocks and loses whatever straddles a cut. Nothing in the output says so -
@@ -147,6 +151,20 @@ else
   bad "nothing answers at $BASE. $UNIT is not running - its last words were:" \
       "systemctl --user enable --now $UNIT"
   journalctl --user -u "$UNIT" -n 3 --no-pager -o cat 2>/dev/null | sed 's/^/        /'
+fi
+
+# --- translate -------------------------------------------------------------
+# Which engine translates. An optional one is checked here, with the step that sets it up.
+sec "translate"
+note "engine: $TRANSLATE_ENGINE"
+if [[ "$TRANSLATE_ENGINE" != whisper ]]; then
+  if reason="$(TALKEY_TRANSLATE_ENGINE="$TRANSLATE_ENGINE" "${TALKEY_TRANSLATE_PYTHON:-python3}" \
+                 "$SCRIPT_DIR/talkey-translate-worker" --check 2>&1)"; then
+    ok "the $TRANSLATE_ENGINE engine is ready"
+  else
+    reason="$(tail -n 1 <<< "$reason")"; reason="${reason#talkey translate: }"
+    bad "${reason%; run: *}" "talkey-setup $TRANSLATE_ENGINE"
+  fi
 fi
 
 # --- 5. key bindings -------------------------------------------------------

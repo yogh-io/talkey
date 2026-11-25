@@ -180,7 +180,7 @@ pkgdir="$2"; srcdir="$3"; cd "$srcdir"; package
         self.assertEqual(result.returncode,0,result.stderr)
         for name in ['controller.sh','session.sh','auto.sh','setup/keys.sh','config.sh','whisper.sh','hud.sh',
                      'smart_turn.py','speech.py','commands.py','commands.sh','gestures.sh',
-                     'vad.py','translate.sh','setup/translate.sh',
+                     'vad.py','translate.sh','setup/translate.sh','seamless.py','setup/seamless.sh',
                      'vendor/smart_turn_features.py','vendor/LICENSE.pipecat',
                      'vendor/LICENSE.transformers']:
             self.assertTrue((stage/'usr/share/talkey/lib'/name).is_file(),name)
@@ -191,6 +191,9 @@ pkgdir="$2"; srcdir="$3"; cd "$srcdir"; package
         self.assertTrue(os.access(stage/'usr/share/talkey/integrations/eww/talkey-hud',os.X_OK))
         self.assertTrue(os.access(stage/'usr/bin/talkey-auto-worker',os.X_OK))
         self.assertTrue(os.access(stage/'usr/bin/talkey-translate-worker',os.X_OK))
+        self.assertTrue(os.access(stage/'usr/bin/talkey-seamless-server',os.X_OK))
+        for name in ('seamless-requirements.txt','seamless-weights.sha256'):
+            self.assertTrue((stage/'usr/share/talkey/config'/name).is_file(),name)
         self.assertTrue((stage/'usr/share/talkey/config/translate-requirements.txt').is_file())
         self.assertTrue((stage/'usr/share/talkey/config/commands.d/enter-on.json').is_file())
         for tone in ('auto-on', 'auto-off'):
