@@ -17,6 +17,7 @@ account or subscription. The one exception is a one-time download of the voice
 model, described below.
 
 - [How it works](#how-it-works)
+- [Choosing the engine](#choosing-the-engine)
 - [Install](#install)
 - [Getting your voice right](#getting-your-voice-right)
 - [Use it in a call](#use-it-in-a-call)
@@ -84,6 +85,91 @@ Before it speaks, it is given a short recording of you, and it carries on as the
 same speaker: your timbre, your accent, your intonation. The model itself never
 changes. That is why a few seconds of recording are enough, and why the quality
 of that recording matters so much (see [Getting your voice right](#getting-your-voice-right)).
+
+## Choosing the engine
+
+The steps above are the default engine, called `whisper`. There is an optional
+second one, `seamless`: Meta's SeamlessStreaming, a model made to translate
+speech while someone is still talking. It hears you and writes English as it
+goes, about three times a second, and talkey speaks each whole English word with
+the same voice and the same timing. While it translates it needs neither your
+whisper server nor Ollama. The setting `TALKEY_TRANSLATE_ENGINE` picks the
+engine. The translate window shows the one that runs in its bottom-right corner,
+and `talkey translate status` names it.
+
+Measured on 19 Dutch recordings of about 10 seconds each, played into a private
+session on an RTX 3070 Ti with 8 GB:
+
+| | whisper | seamless |
+|---|---|---|
+| English starts after you start talking (mean, median) | 3.2 s, 2.4 s | 2.2 s, 2.0 s |
+| Last English after you stop talking | 4.6 s | 3.3 s |
+| Silence between pieces of English, per recording | 1.6 s | 1.9 s |
+| Pieces per recording | 5.3 | 7.2 |
+| Ready after you switch translation on | 4 s | 8 s |
+| How close the English is to a reference translation (chrF, higher is closer) | 63 | 61 |
+
+What else is different with `seamless`:
+
+- **No context.** It ignores your notes and the live context. The model has no
+  way to take them.
+- **It sometimes invents words**, or repeats some. The voice says them like any
+  other English; talkey does not filter them. Watch the translate window.
+- **The line in your own language is a second reading.** The same model writes
+  it from the same audio, apart from the English, so the two can differ. It is
+  less exact than whisper: about 18 words in 100 were wrong, against 10.
+- **It needs a large GPU:** about 5 GB of VRAM for itself, and 13 GB of disk.
+- **It needs your language named.** `TALKEY_TRANSLATE_FROM` must be `nl`, `de`,
+  `fr`, `es`, `it` or `pt`; `auto` does not work.
+
+**The licence.** The SeamlessStreaming weights are Meta's, licensed
+CC-BY-NC-4.0: non-commercial use only. talkey does not ship them, never installs
+them unless you ask, and the default engine does not use them.
+
+### Install the Seamless engine
+
+```bash
+talkey-setup seamless
+```
+
+It shows the licence and asks first; the answer is no unless you type `y`. Then
+it makes a Python 3.10 environment in `~/.local/share/talkey/seamless/venv` (it
+needs `python3.10` or `uv`), installs PyTorch, fairseq2 and Meta's
+seamless_communication into it (about 5.5 GB), and downloads the four weight
+files (about 7.9 GB) from a fixed revision, each checked against its checksum.
+It does not change your settings. To use the engine, add this to `talkey.env`
+and switch translation off and on:
+
+```
+TALKEY_TRANSLATE_ENGINE=seamless
+```
+
+Check: `talkey doctor` shows `engine: seamless` and `the seamless engine is
+ready`, and the translate window says `engine: seamless` in its corner.
+
+The engine runs offline: it reads the weights from that folder and never
+downloads anything while translating.
+
+### GPU memory
+
+Seamless takes about 5 GB of VRAM, all of it when translation starts, so a card
+that is too small fails right then, not in the middle of a call. On an 8 GB card
+it does not fit next to the whisper server that dictation uses (about 2 GB), nor
+next to a loaded Ollama model. Without room, translation stops with
+`translate stopped: not enough GPU memory for Seamless`, how much was free, and
+which programs hold the rest.
+
+To let Seamless take the whisper server's memory, add:
+
+```
+TALKEY_SEAMLESS_PAUSE_WHISPER=1
+```
+
+Starting translation then stops `talkey-whisper.service`, and stopping
+translation, or an error, starts it again. In between there is no dictation: the
+dictation key says `dictation is paused while Seamless translates`, and auto mode
+does not start. talkey does not unload Ollama. If a translation model is still
+loaded from an earlier session, free it with `ollama stop translategemma:4b`.
 
 ## Install
 
@@ -272,6 +358,8 @@ English has played. It keeps the conversation, newest at the bottom:
 - Slanted grey English is translated but not played yet. A **…** means more
   English is coming.
 - **▶ ON AIR** in the corner means English is playing.
+- The bottom-right corner names the engine that translates, for example
+  `engine: whisper` (see [Choosing the engine](#choosing-the-engine)).
 
 Which piece of English is playing is exact: talkey knows when it hands each piece
 to the microphone. Where the voice is inside a piece is an estimate, from the
@@ -346,6 +434,9 @@ takes room in the model's prompt and costs a little time per translation.
 
 ## What to expect
 
+This is the default engine; for the Seamless engine, see
+[Choosing the engine](#choosing-the-engine).
+
 - **Delay.** The English usually starts about 3 seconds after you start a
   sentence, often before you finish it. talkey waits until it has some settled
   English, so the voice rarely stops right after a fragment. It cannot start much
@@ -371,6 +462,9 @@ after changing them.
 
 | Setting | Default | Meaning |
 |---|---|---|
+| `TALKEY_TRANSLATE_ENGINE` | `whisper` | The engine that translates: `whisper`, or `seamless` (see [Choosing the engine](#choosing-the-engine)) |
+| `TALKEY_SEAMLESS_HOME` | `~/.local/share/talkey/seamless` | Where the Seamless engine's `venv/` and `models/` are |
+| `TALKEY_SEAMLESS_PAUSE_WHISPER` | `0` | `1` stops `talkey-whisper.service` while Seamless translates, for its GPU memory; no dictation meanwhile |
 | `TALKEY_TRANSLATE_PYTHON` | `python3` | The Python with Pocket TTS installed |
 | `TALKEY_TRANSLATE_VOICE` | `~/.local/share/talkey/translate/voice.safetensors` | Your cloned voice |
 | `TALKEY_TRANSLATE_FROM` | `nl` | The language you speak, as a whisper code; `auto` lets whisper guess per phrase |
@@ -402,8 +496,9 @@ after changing them.
 | `TALKEY_CAMERA_FPS` | `30` | Frames per second of the talkey camera |
 
 For a status bar, `talkey translate status` prints one JSON object, for example
-`{"enabled":true,"state":"hearing","microphone":"talkey_translate_mic"}`. The
-state is `off`, `starting`, `listening`, `hearing` or `error`.
+`{"enabled":true,"state":"hearing","engine":"whisper","microphone":"talkey_translate_mic"}`.
+The state is `off`, `starting`, `listening`, `hearing` or `error`. The engine is
+the one that runs, or, while translation is off, the one that would start.
 `talkey translate toggle` switches it from a click. `talkey camera status`
 prints `{"enabled":true,"device":"/dev/video10"}`, with an empty device when
 there is no talkey camera.
@@ -437,6 +532,9 @@ seconds since you began that phrase. It shows when you started and stopped
 talking, each transcription of the phrase so far and each draft translation,
 with how long they took, why a draft was spoken or held back, when each piece
 was handed to the voice, when its first audio was made, and when it played.
+With the Seamless engine it has each step of the model instead of the
+transcriptions and drafts: how much of your audio it had heard, how long the
+step took, the new English words, and the words in your language.
 Use it to find where the time goes.
 
 To check that the English really reaches the microphone, record it directly while
@@ -449,7 +547,8 @@ parecord --device=talkey_translate_mic check.wav
 ## Privacy
 
 - Nothing leaves your machine while translating. A session runs with
-  `HF_HUB_OFFLINE=1`; only `talkey-setup translate` downloads the voice model.
+  `HF_HUB_OFFLINE=1`; only `talkey-setup translate` downloads the voice model,
+  and only `talkey-setup seamless` the Seamless weights.
 - Your recording and your cloned voice live in `~/.local/share/talkey/translate`,
   readable only by you. They are never part of talkey's repository or package.
 - Recordings of your calls are off by default (`TALKEY_TRANSLATE_RECORD`).
@@ -462,9 +561,22 @@ parecord --device=talkey_translate_mic check.wav
 
 ## Troubleshooting
 
-**"translate mode unavailable - run: talkey-setup translate".** Something in
-steps 2 to 5 is missing. `talkey-setup translate` checks each step and says which
-one.
+**"translate mode unavailable: ...".** Something is missing, and the message
+says what. For the voice, `talkey-setup translate` checks each of steps 2 to 5
+and says which one; for the Seamless engine, `talkey-setup seamless`.
+
+**"translate stopped: ...".** Translation stopped after an error, and the
+message says why. The talkey log has the rest.
+
+**"not enough GPU memory for Seamless".** The message says how much was free and
+which programs hold the rest. Set `TALKEY_SEAMLESS_PAUSE_WHISPER=1`, unload an
+Ollama model with `ollama stop`, or use the default engine. See
+[GPU memory](#gpu-memory).
+
+**"dictation is paused while Seamless translates".** With
+`TALKEY_SEAMLESS_PAUSE_WHISPER=1`, the whisper server is stopped while Seamless
+translates. Stop translating to dictate. If a translate session was killed and
+left it stopped, the next dictation starts it again.
 
 **"your input is the talkey English mic".** Your system's default microphone is
 set to the virtual one, so talkey would translate its own output. Set your real

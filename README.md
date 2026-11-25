@@ -302,7 +302,10 @@ can put the same subtitles on your video.
 All of it runs on your machine: your whisper server for the words, an Ollama
 model (`translategemma:4b`) for the translation, and Pocket TTS on the CPU for a
 voice cloned from 25 seconds of you. The English usually starts 2 to 3.5 seconds
-into a sentence, without ever speaking a word it had to guess.
+into a sentence, without ever speaking a word it had to guess. An optional second
+engine, Meta's SeamlessStreaming, starts the English earlier but needs about 5 GB
+of GPU memory, and its weights are for non-commercial use only: see
+[choosing the engine](docs/translate.md#choosing-the-engine).
 
 **[docs/translate.md](docs/translate.md)** has the step-by-step install guide,
 how to get the voice to sound like you, how it works, settings, debugging and

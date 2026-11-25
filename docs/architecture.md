@@ -22,6 +22,7 @@ runs a background Python capture/VAD worker.
 | `bin/talkey-live-pump` | Interruptible HTTP inference, two-pass agreement, atomic preview publication |
 | `bin/talkey-auto-worker`, `lib/auto.sh` | Continuous capture, Silero VAD, endpoint detection, ordered delivery and external status |
 | `bin/talkey-translate-worker`, `lib/translate.sh` | Live translation: capture, recognition, Ollama translation, Pocket TTS and the virtual microphone |
+| `lib/seamless.py`, `bin/talkey-seamless-server` | The optional SeamlessStreaming translate engine: the worker's side, whole-word completion, and the model server in its own Python |
 | `lib/vad.py` | Silero VAD through whisper.cpp and audio-time endpoints, shared by both workers |
 | `lib/stretch.py` | Changes the pace of the translated voice without changing its pitch (WSOLA), as it streams |
 | `bin/talkey-camera-worker`, `lib/camera.sh`, `lib/captions.py` | The talkey camera: the webcam with the translation's subtitles, written to a v4l2loopback device |
@@ -164,7 +165,8 @@ unrecovered takes.
 
 `translate.current` selects the run directory, fenced the same way as auto mode.
 The worker owns no takes and types nothing. Its main thread captures audio and
-runs VAD. While a phrase is heard, a preview worker transcribes it every 250 ms
+runs VAD. An engine turns each phrase into English; the default one,
+`WhisperEngine`, works as follows. While a phrase is heard, a preview worker transcribes it every 250 ms
 with whisper's `verbose_json`, and translates the words it can trust: the start
 that this and the previous transcript share. A word whose probability (that of
 its least likely token) is below `TALKEY_TRANSLATE_WORD_P` must also be in the
@@ -180,7 +182,8 @@ sentence end after the Dutch so far: end of text, a new line, or a token that
 starts with `.`, `?` or `!`. Such a whole draft stays settled while later
 previews keep its Dutch. The worker then decides from times it measures during
 the session: settled English waits while the voice has more audio left than its
-mean time to first audio plus the mean time between previews (`voice-busy`),
+mean time to first audio plus the mean time between the engine's looks at the
+phrase, previews here (`voice-busy`),
 and it waits while the audio in hand, at the slowest pace, would not last the
 mean time from one piece being handed over to the next being settled
 (`would-run-dry`, scaled by `TALKEY_TRANSLATE_GUARD`). The voice asks for a
@@ -199,6 +202,60 @@ generated with the previous piece's text and frames forced in front, and a
 piece that is not the last loses its end-of-speech tail, so a phrase stays one
 utterance. Any stage error stops the worker and reports `error`.
 
+The worker's `Interpreter` owns capture, VAD, phrases, the voice, the subtitles
+and the trace. `TALKEY_TRANSLATE_ENGINE` picks the engine from the worker's
+`ENGINES`, the only place that knows their names. The Interpreter calls the
+engine's `begin`, `hear` (each frame) and `end` (the pause) with the phrase,
+whose `frames` hold its audio so far. The engine answers through `heard` (the
+text in the speaker's language), `gate` (whether a piece goes to the voice now,
+or why it waits), `queue` (speak it) and exactly one of `finish` or `drop` per
+phrase, and may use `cycle`, `trace` and `guard`; nothing else of the
+Interpreter. `start` loads the engine while the voice loads, so `ready` comes
+after both; `close` stops it. `tests/test_seamless.py` drives both engines
+against a stand-in that has only these members.
+
+`SeamlessEngine` (`lib/seamless.py`, standard library only) runs
+`bin/talkey-seamless-server` with the Python in `TALKEY_SEAMLESS_HOME/venv` and
+talks JSON lines with it. To the server: `start`, `audio` (base64 16 kHz s16le,
+the preroll in the first) and `end`, each with the phrase number. From it:
+`ready` (load time, GPU memory held, the time of a full-length step); per model
+step `step` (`heard_s`, `compute_s`, the new whole English words, and `end`:
+whether the model's next token is end of text), then `source` (new words in the
+speaker's language); at the pause `done` with the rest of the English and a
+last `source`; `error` with a one-line reason, after which it exits. It steps
+once 320 ms of audio waits, with all the audio that waits, so a slow step never
+builds a backlog. It runs SeamlessStreaming's agents by hand: features, the
+w2v-BERT encoder, and two monotonic decoders on the same encoder output, one
+for English and one for the speaker's language. It writes fairseq2 asset cards
+into the run directory that point every model file at a local path, with an
+empty cache directory, so a missing file is an error and never a download, and
+it never builds the Silero agent, which would call `torch.hub`. It moves its
+real stdout aside, so a library that prints cannot break the protocol. After
+loading it runs one phrase of `TALKEY_TRANSLATE_MAX_S` seconds of quiet noise,
+which reserves the memory a long phrase needs and warms the kernels; too little
+GPU memory fails then, with the free memory and the other GPU users in the
+reason. It exits when its stdin ends, so a killed worker frees the GPU.
+
+The decoders give SentencePiece tokens. A token that starts with `▁` begins a
+word, any other continues the open word. `Words` releases a word when the next
+one begins, when the model's next token is end of text, or at the pause; no
+word lists or punctuation rules. On every `step` the engine offers the English
+not yet spoken to `gate`, so a held piece grows; at `done` the rest is the last
+piece, or the phrase is dropped when it had no English at all. A piece that the
+model ends with end of text counts as a sentence end, so no tick follows it. A
+server that stops or reports an error stops the worker with `error`; there is
+no switch to the other engine.
+
+`translate start` writes the engine to the run directory's `engine` file, which
+`translate status` and the translate window read. Before it reports `error`,
+the worker writes its reason to `error`, and the notification shows the first
+line. With `TALKEY_SEAMLESS_PAUSE_WHISPER=1`, starting the Seamless engine stops
+`talkey-whisper.service` when it runs and creates `$STATE_DIR/whisper.paused`.
+`translate stop` starts the unit again, and so does `error`, once the worker
+has exited. While translate runs, `preflight_ok` reports the pause instead of a
+missing server; otherwise it starts the unit and waits up to 10 seconds for it,
+which also heals a session that was killed.
+
 The translator also gets the conversation context: the notes file
 (`TALKEY_TRANSLATE_NOTES`) and `$STATE_DIR/translate.context`, which any
 program may write and which `translate start` removes. Both are re-read, when
@@ -214,7 +271,11 @@ draft with its latency, each `Agreement` decision and its reason, pieces queued,
 the voice's first audio and the play schedule, and ticks. Times are seconds
 since the phrase's first word on the audio clock: capture frame k maps to the
 earliest monotonic time it could have arrived, so a busy main loop does not
-shift them.
+shift them. The Seamless engine writes `step` (`heard_to`, `compute`, `text`,
+`ends`), `source` (`text`), `agree` (`result` `spoken`, `voice-busy` or
+`would-run-dry`, `piece`, `voice_left`, `ends`), `closed` and `final` (`text`,
+`compute`) instead of the previews and drafts; the events of the voice are the
+same for both.
 
 The worker publishes what the HUD shows in `$STATE_DIR`, each file replaced with
 an atomic rename:
@@ -251,8 +312,9 @@ runs `eww-feed scroll` with the phrases the frame names for up and down.
 The null sink and its remap source are created on start when missing and are not
 removed on stop, so applications keep the microphone selected. Start refuses a
 capture source that is the translation microphone itself. Model weights are only
-downloaded by `talkey-setup translate`; the worker sets `HF_HUB_OFFLINE=1`
-before importing Pocket TTS.
+downloaded by `talkey-setup translate` and, for the optional Seamless engine,
+`talkey-setup seamless`; the worker sets `HF_HUB_OFFLINE=1` before importing
+Pocket TTS, and the Seamless server inherits it.
 
 The talkey camera is the v4l2loopback device named `talkey camera`.
 `talkey-camera-worker` opens it as the writer, sets an I420 format and writes one
