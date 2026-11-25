@@ -545,15 +545,26 @@ if args[1] == 'start' and loading.exists():
         self.assertTrue(all(call[0] == '--user' and call[-1] == 'talkey-whisper.service' for call in calls))
         return [call[1] for call in calls]
 
+    def unloads(self):
+        """The Ollama models talkey asked to unload, with the endpoint it asked."""
+        path = self.root/'curl-args'
+        calls = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        return [(call[call.index('-d') - 1], json.loads(call[call.index('-d') + 1])) for call in calls
+                if '-d' in call and 'keep_alive' in json.loads(call[call.index('-d') + 1])]
+
     def test_whisper_pauses_only_when_asked_and_comes_back_when_translate_stops(self):
         self.fake_systemctl()
         self.listen()
         self.run_key('translate', 'stop')
         self.assertEqual(self.systemctl(), [])
+        self.assertEqual(self.unloads(), [])
         self.env['TALKEY_SEAMLESS_PAUSE_WHISPER'] = '1'
         self.record_notifications()
         self.listen()
         self.assertEqual(self.systemctl(), ['is-active', 'stop'])
+        self.assertEqual(self.unloads(), [
+            ('http://localhost:11434/api/generate', {'model': 'qwen2.5:3b', 'keep_alive': 0}),
+            ('http://127.0.0.1:11434/api/chat', {'model': 'translategemma:4b', 'messages': [], 'keep_alive': 0})])
         self.assertTrue((self.state/'whisper.paused').exists())
         self.assertIn('translate starting - dictation is paused until you stop translating', self.notified())
         self.run_key('dictate', 'start', check=False)

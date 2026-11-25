@@ -170,9 +170,10 @@ Starting translation then stops `talkey-whisper.service`, and stopping
 translation, or an error, starts it again. While a dictation is still being
 recorded or transcribed, translation does not start: it says `dictation is still
 running`. In between there is no dictation: the dictation key says `dictation is
-paused while Seamless translates`, and auto mode does not start. talkey does not
-unload Ollama. If a translation model is still loaded from an earlier session,
-free it with `ollama stop translategemma:4b`.
+paused while Seamless translates`, and auto mode does not start. talkey also
+unloads its own Ollama models, `TALKEY_OLLAMA_MODEL` and `TALKEY_TRANSLATE_LLM`,
+which Ollama keeps on the GPU for a few minutes after their last use; Ollama loads
+them again when they are next needed. Models other programs loaded stay.
 
 ## Install
 
@@ -470,7 +471,7 @@ after changing them.
 |---|---|---|
 | `TALKEY_TRANSLATE_ENGINE` | `whisper` | The engine that translates: `whisper`, or `seamless` (see [Choosing the engine](#choosing-the-engine)) |
 | `TALKEY_SEAMLESS_HOME` | `~/.local/share/talkey/seamless` | Where the Seamless engine's `venv/` and `models/` are |
-| `TALKEY_SEAMLESS_PAUSE_WHISPER` | `0` | `1` stops `talkey-whisper.service` while Seamless translates, for its GPU memory; no dictation meanwhile |
+| `TALKEY_SEAMLESS_PAUSE_WHISPER` | `0` | `1` stops `talkey-whisper.service` and unloads talkey's Ollama models while Seamless translates, for their GPU memory; no dictation meanwhile |
 | `TALKEY_TRANSLATE_PYTHON` | `python3` | The Python with Pocket TTS installed |
 | `TALKEY_TRANSLATE_VOICE` | `~/.local/share/talkey/translate/voice.safetensors` | Your cloned voice |
 | `TALKEY_TRANSLATE_FROM` | `nl` | The language you speak, as a whisper code; `auto` lets whisper guess per phrase |

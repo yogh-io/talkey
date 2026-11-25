@@ -254,8 +254,10 @@ no switch to the other engine.
 `translate status` and the translate window read. Before it reports `error`,
 the worker writes its reason to `error`, and the notification shows the first
 line. With `TALKEY_SEAMLESS_PAUSE_WHISPER=1`, starting the Seamless engine stops
-`talkey-whisper.service` when it runs and creates `$STATE_DIR/whisper.paused`;
-it refuses to start while `dictation_active`, so no take loses its server.
+`talkey-whisper.service` when it runs and creates `$STATE_DIR/whisper.paused`,
+and asks Ollama to unload `TALKEY_OLLAMA_MODEL` and `TALKEY_TRANSLATE_LLM`
+(`keep_alive: 0`, which does not load a model that is not loaded); it refuses to
+start while `dictation_active`, so no take loses its server.
 `translate stop` starts the unit again, and so does `error`, once the worker
 has exited. While translate runs, `preflight_ok` reports the pause instead of a
 missing server; otherwise it starts the unit and waits up to 10 seconds for it,

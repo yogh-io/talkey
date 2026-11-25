@@ -3,6 +3,8 @@
 TRANSLATE_SINK="${TALKEY_TRANSLATE_SINK:-talkey_translate}"
 TRANSLATE_MIC="${TALKEY_TRANSLATE_MIC:-talkey_translate_mic}"
 TRANSLATE_ENGINE="${TALKEY_TRANSLATE_ENGINE:-whisper}"
+TRANSLATE_URL="${TALKEY_TRANSLATE_URL:-http://127.0.0.1:11434/api/chat}"
+TRANSLATE_LLM="${TALKEY_TRANSLATE_LLM:-translategemma:4b}"
 WHISPER_UNIT=talkey-whisper.service
 translate_load() { TRANSLATE_DIR="$(readlink -f "$STATE_DIR/translate.current" 2>/dev/null)"; [[ -d "$TRANSLATE_DIR" ]]; }
 translate_active() { translate_load && process_alive "$TRANSLATE_DIR/worker.pid"; }
@@ -29,6 +31,15 @@ whisper_pause() {
   command -v systemctl > /dev/null && systemctl --user is-active --quiet "$WHISPER_UNIT" || return 0
   : > "$STATE_DIR/whisper.paused"
   systemctl --user stop "$WHISPER_UNIT" || { rm -f "$STATE_DIR/whisper.paused"; return 1; }
+}
+
+# Ollama keeps a model on the GPU for minutes after its last use. talkey's own models are unloaded;
+# Ollama loads them again when they are next used. An Ollama that is not running holds nothing.
+ollama_unload() {
+  curl -s --max-time 5 "$OLLAMA_URL" -d "$(jq -nc --arg m "$OLLAMA_MODEL" '{model: $m, keep_alive: 0}')" \
+    > /dev/null || true
+  curl -s --max-time 5 "$TRANSLATE_URL" -d "$(jq -nc --arg m "$TRANSLATE_LLM" '{model: $m, messages: [], keep_alive: 0}')" \
+    > /dev/null || true
 }
 
 whisper_resume() {
@@ -64,9 +75,9 @@ translate_start() {
   fi
   translate_devices || { notify 'translate: could not create the talkey English mic' 5000; return 1; }
   if auto_active; then auto_stop; fi
-  if (( pause )) && ! whisper_pause; then
-    notify "translate: could not stop $WHISPER_UNIT to make room for Seamless" 5000
-    return 1
+  if (( pause )); then
+    whisper_pause || { notify "translate: could not stop $WHISPER_UNIT to make room for Seamless" 5000; return 1; }
+    ollama_unload
   fi
   rm -f "$STATE_DIR/translate.showing" "$STATE_DIR/translate.subtitles" "$STATE_DIR/translate.raw" \
     "$STATE_DIR/translate.scroll" "$STATE_DIR/translate.context"
