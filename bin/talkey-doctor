@@ -154,7 +154,7 @@ else
 fi
 
 # --- translate -------------------------------------------------------------
-# Which engine translates. An optional one is checked here, with the step that sets it up.
+# Which engine translates. An optional one is checked here, with the fix the worker names.
 sec "translate"
 note "engine: $TRANSLATE_ENGINE"
 if [[ "$TRANSLATE_ENGINE" != whisper ]]; then
@@ -163,7 +163,12 @@ if [[ "$TRANSLATE_ENGINE" != whisper ]]; then
     ok "the $TRANSLATE_ENGINE engine is ready"
   else
     reason="$(tail -n 1 <<< "$reason")"; reason="${reason#talkey translate: }"
-    bad "${reason%; run: *}" "talkey-setup $TRANSLATE_ENGINE"
+    if [[ "$reason" == *'; run: '* ]]; then
+      bad "${reason%; run: *}" "${reason##*; run: }"
+    else
+      # Without a step to run, the reason names the setting to change.
+      bad "$reason" "correct it in ${TALKEY_CONFIG/#$HOME/\~}"
+    fi
   fi
 fi
 
