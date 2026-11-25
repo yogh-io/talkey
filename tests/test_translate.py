@@ -290,7 +290,7 @@ class TimingTests(unittest.TestCase):
             def seconds(self, text):
                 return len(text) * .06
 
-        self.interpreter = worker.Interpreter(None, None, Translate())
+        self.interpreter = worker.Interpreter(None, None, lambda out: worker.WhisperEngine(out, Translate()))
         self.interpreter.voice = Voice()
         self.interpreter.first_audio.append(.25)
         self.phrase = worker.Phrase(time.monotonic(), 1)
@@ -298,7 +298,7 @@ class TimingTests(unittest.TestCase):
 
     def say(self, *texts):
         for text in texts:
-            self.interpreter.advance(self.phrase, text)
+            self.interpreter.engine.advance(self.phrase, text)
 
     def test_a_piece_that_lasts_until_more_is_usually_settled_goes_out(self):
         self.say('Hallo allemaal', 'Hallo allemaal ik deel')

@@ -275,6 +275,7 @@ class Phrase:
         self.onset = started
         self.audio_from = started
         self.audio = b''
+        self.frames = []
         # As the HUD shows it; each piece of English gets the Unix times it starts and stops playing.
         self.shown = {'n': number, 'dutch': '', 'english': '', 'live': True, 'done': False, 'pieces': []}
         # Held while a preview or the final translation works on this phrase.
@@ -381,6 +382,142 @@ class Translator:
             self.history.append((text, english))
 
 
+class WhisperEngine:
+    """Whisper hears the phrase while it is spoken, TranslateGemma drafts its English, and the English
+    later drafts keep goes to the voice before the phrase ends."""
+    name = 'whisper'
+
+    def __init__(self, out, translator=None):
+        self.out, self.translate, self.trace = out, translator or Translator(), out.trace
+        self.url = os.environ.get('TALKEY_WHISPER_URL', 'http://127.0.0.1:8910/inference')
+        self.language = os.environ.get('TALKEY_TRANSLATE_FROM', 'nl')
+        self.phrases = queue.Queue()
+        self.preview_s = setting('TRANSLATE_PREVIEW_MS', '250', 100, 10000) / 1000
+        self.preview_frames = math.ceil(self.preview_s * 1000 / FRAME_MS)
+        self.end_p = setting('TRANSLATE_END_P', '0.2', 0.01, 1)
+        self.word_p = setting('TRANSLATE_WORD_P', '0.5', 0, 1)
+        self.stream = os.environ.get('TALKEY_TRANSLATE_STREAM', '1') == '1'
+        self.previews = ThreadPoolExecutor(max_workers=1)
+        self.previewing = None
+        self.recent = deque(maxlen=2)
+        out.cycle.append(self.preview_s)
+
+    @classmethod
+    def check(cls):
+        setting('TRANSLATE_PREVIEW_MS', '250', 100, 10000)
+        setting('TRANSLATE_END_P', '0.2', 0.01, 1)
+        setting('TRANSLATE_WORD_P', '0.5', 0, 1)
+
+    def start(self):
+        # Also checks that Ollama gives the token probabilities the sentence-end chance needs.
+        self.translate('Hallo.')
+        self.translate.ends('Hallo.')
+        self.out.guard(self.recognize)
+
+    def begin(self, phrase):
+        phrase.context = self.translate.context()
+        phrase.previewed = len(phrase.frames)
+
+    def hear(self, phrase):
+        if (len(phrase.frames) - phrase.previewed >= self.preview_frames
+                and (self.previewing is None or self.previewing.done())):
+            phrase.previewed = len(phrase.frames)
+            self.previewing = self.previews.submit(self.preview_phrase, phrase, b''.join(phrase.frames),
+                                                   self.prompt(phrase))
+
+    def end(self, phrase):
+        self.phrases.put((phrase.audio, phrase))
+
+    def close(self):
+        self.previews.shutdown(wait=False, cancel_futures=True)
+
+    def prompt(self, phrase):
+        """Whisper's prompt: the conversation context, then the last sentences, which whisper keeps if it must cut."""
+        return ' '.join(filter(None, [phrase.context.replace('\n', ' '), *self.recent])) or None
+
+    def preview_phrase(self, phrase, pcm, prompt):
+        try:
+            with phrase.lock:
+                if phrase.closed:
+                    return
+                sent = time.monotonic()
+                if phrase.previewed_at is not None:
+                    self.out.cycle.append(sent - phrase.previewed_at)
+                phrase.previewed_at = sent
+                text, words, _ = preview(pcm, self.url, self.language, prompt)
+                # Only what whisper stands by is translated; the subtitles show all of it.
+                trusted = settled(words, phrase.heard, self.word_p)
+                phrase.heard.append([bare(word) for word, _ in words])
+                self.trace(phrase, 'preview', audio_s=round(len(pcm) / 32000, 3), text=text,
+                           heard_to=phrase.audio_from + len(pcm) / 32000, latency=round(time.monotonic() - sent, 3),
+                           trusted=len(trusted), low=round(min((p for _, p in trusted), default=1), 3))
+                self.out.heard(phrase, text)
+                if self.stream and re.search(r'\w', text):
+                    self.advance(phrase, ' '.join(word for word, _ in trusted))
+        except Exception as error:
+            print(f'talkey translate: preview failed: {error}', file=sys.stderr)
+
+    def advance(self, phrase, text):
+        """Draft the English for the phrase so far and speak what the drafts agree on."""
+        if phrase.agreement is None:
+            phrase.agreement = Agreement(self.end_p)
+        words, spoken = text.split(), phrase.agreement.spoken
+        if not words_of(words[resume(phrase.agreement.said, words):]):
+            self.trace(phrase, 'agree', result='dutch-unsettled', piece=None)
+            return
+        # The same Dutch after the same English gives the same draft.
+        if phrase.drafted and phrase.drafted[0] == (text, spoken):
+            draft, joined, ends = phrase.drafted[1]
+        else:
+            sent = time.monotonic()
+            draft, joined = self.translate(text, spoken, phrase.context)
+            ends = self.translate.ends(text)
+            phrase.drafted = ((text, spoken), (draft, joined, ends))
+            self.trace(phrase, 'draft', source=text, spoken=spoken, english=draft, ends=round(ends, 3),
+                       latency=round(time.monotonic() - sent, 3))
+        agreement = phrase.agreement
+        piece = agreement.offer(words, draft, ends, joined)
+        wait, voice_left, cover, refill = self.out.gate(phrase, piece)
+        if piece and wait:
+            agreement.hold(wait, piece)
+            piece = None
+        elif piece:
+            piece = agreement.commit()
+        self.trace(phrase, 'agree', voice_left=round(voice_left, 3), ends=round(ends, 3), **agreement.decision)
+        if piece:
+            self.out.queue(phrase, *piece, last=False, cover=round(cover, 3), refill=round(refill, 3))
+
+    def recognize(self):
+        while True:
+            pcm, phrase = self.phrases.get()
+            sent = time.monotonic()
+            # The last sentences steer whisper toward words that fit what was being said.
+            text, _, no_speech = transcribe_words(pcm, self.url, self.language, self.prompt(phrase), 16000, 1)
+            self.trace(phrase, 'final_asr', audio_s=round(len(pcm) / 32000, 3), text=text,
+                       latency=round(time.monotonic() - sent, 3), no_speech=round(no_speech, 4))
+            with phrase.lock:
+                phrase.closed = True
+                self.trace(phrase, 'closed')
+                if not re.search(r'\w', text) or HALLUCINATION.search(text):
+                    self.out.drop(phrase)
+                    continue
+                self.recent.append(text)
+                self.out.heard(phrase, text, live=False)
+                words, agreement = text.split(), phrase.agreement or Agreement(self.end_p)
+                if re.search(r'\w', ' '.join(words[resume(agreement.said, words):])):
+                    sent = time.monotonic()
+                    english, joined = self.translate(text, agreement.spoken, phrase.context)
+                    self.trace(phrase, 'final_draft', source=text, spoken=agreement.spoken, english=english,
+                               latency=round(time.monotonic() - sent, 3))
+                    if english:
+                        self.out.queue(phrase, english, joined, last=True)
+                self.out.finish(phrase)
+                self.translate.remember(text, phrase.english)
+
+
+ENGINES = {'whisper': WhisperEngine}
+
+
 class Voice:
     """Pocket TTS on CPU, streamed as 16-bit mono PCM; a phrase spoken in pieces stays one utterance.
 
@@ -473,13 +610,12 @@ class Voice:
 
 
 class Interpreter:
-    def __init__(self, vad, voice_path, translator):
-        self.vad, self.voice_path, self.translate = vad, voice_path, translator
+    def __init__(self, vad, voice_path, engine):
+        self.vad, self.voice_path = vad, voice_path
         self.voice = None
         self.run_dir = Path(os.environ['TALKEY_TRANSLATE_RUN'])
         self.state_dir = Path(os.environ['TALKEY_STATE_DIR'])
         self.command = str(Path(__file__).resolve().with_name('talkey'))
-        self.url = os.environ.get('TALKEY_WHISPER_URL', 'http://127.0.0.1:8910/inference')
         self.language = os.environ.get('TALKEY_TRANSLATE_FROM', 'nl')
         start = setting('VAD_START_MS', '160', 32, 2000)
         silence = setting('TRANSLATE_SILENCE_MS', '500', 160, 10000)
@@ -489,22 +625,17 @@ class Interpreter:
         self.endpoint = Phrases(start, silence, cap * 1000, quick, quick_after * 1000)
         self.preroll = deque(maxlen=math.ceil((start + 300) / FRAME_MS))
         self.frames = queue.Queue(maxsize=math.ceil(120000 / FRAME_MS))
-        self.phrases = queue.Queue()
         self.lines = queue.Queue()
-        self.preview_s = setting('TRANSLATE_PREVIEW_MS', '250', 100, 10000) / 1000
-        self.preview_frames = math.ceil(self.preview_s * 1000 / FRAME_MS)
-        self.end_p = setting('TRANSLATE_END_P', '0.2', 0.01, 1)
-        self.word_p = setting('TRANSLATE_WORD_P', '0.5', 0, 1)
         self.speed = setting('TRANSLATE_SPEED', '0.95', 0.5, 1.5)
         self.speed_min = setting('TRANSLATE_SPEED_MIN', '0.85', 0.5, 1.5)
         self.speed_max = setting('TRANSLATE_SPEED_MAX', '1.15', 0.5, 1.5)
         self.dry_guard = setting('TRANSLATE_GUARD', '0.5', 0, 10)
         # Measured as the session goes: seconds from a piece being handed to the voice until the
         # next one is settled (starting from a guess), the voice's time to its first audio, and the
-        # time between previews.
+        # time between the engine's looks at a phrase.
         self.refill = deque([1.0], maxlen=20)
         self.first_audio = deque(maxlen=20)
-        self.cycle = deque([self.preview_s], maxlen=20)
+        self.cycle = deque(maxlen=20)
         # The phrase and piece the voice is saying, and the seconds of English it had in hand then.
         self.speaking = None
         # Whether the last piece played ended a sentence; a tick only fills a wait inside one.
@@ -521,12 +652,8 @@ class Interpreter:
             archive = Path(os.environ.get('TALKEY_ARCHIVE_DIR', Path.home() / '.local/share/talkey/recordings'))
             self.recordings = archive / 'translate' / time.strftime('%Y%m%d-%H%M%S')
             self.recordings.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.stream = os.environ.get('TALKEY_TRANSLATE_STREAM', '1') == '1'
         tracing = os.environ.get('TALKEY_TRANSLATE_TRACE', '0') == '1'
         self.trace = Trace(self.run_dir / 'trace.jsonl' if tracing else None)
-        self.previews = ThreadPoolExecutor(max_workers=1)
-        self.previewing = None
-        self.recent = deque(maxlen=2)
         # The session's recent phrases, as the HUD shows them. The lock also guards the counts.
         self.subtitles = deque(maxlen=HISTORY)
         self.lock = threading.Lock()
@@ -537,6 +664,7 @@ class Interpreter:
         self.capture = None
         self.players = []
         self.stopping = threading.Event()
+        self.engine = engine(self) if engine else None
 
     def state(self, value):
         if (self.run_dir / 'state').read_text().strip() == 'off':
@@ -629,62 +757,6 @@ class Interpreter:
             self.show()
         phrase.segments.put(None)
 
-    def prompt(self, phrase):
-        """Whisper's prompt: the conversation context, then the last sentences, which whisper keeps if it must cut."""
-        return ' '.join(filter(None, [phrase.context.replace('\n', ' '), *self.recent])) or None
-
-    def preview_phrase(self, phrase, pcm, prompt):
-        try:
-            with phrase.lock:
-                if phrase.closed:
-                    return
-                sent = time.monotonic()
-                if phrase.previewed_at is not None:
-                    self.cycle.append(sent - phrase.previewed_at)
-                phrase.previewed_at = sent
-                text, words, _ = preview(pcm, self.url, self.language, prompt)
-                # Only what whisper stands by is translated; the subtitles show all of it.
-                trusted = settled(words, phrase.heard, self.word_p)
-                phrase.heard.append([bare(word) for word, _ in words])
-                self.trace(phrase, 'preview', audio_s=round(len(pcm) / 32000, 3), text=text,
-                           heard_to=phrase.audio_from + len(pcm) / 32000, latency=round(time.monotonic() - sent, 3),
-                           trusted=len(trusted), low=round(min((p for _, p in trusted), default=1), 3))
-                self.heard(phrase, text)
-                if self.stream and re.search(r'\w', text):
-                    self.advance(phrase, ' '.join(word for word, _ in trusted))
-        except Exception as error:
-            print(f'talkey translate: preview failed: {error}', file=sys.stderr)
-
-    def advance(self, phrase, text):
-        """Draft the English for the phrase so far and speak what the drafts agree on."""
-        if phrase.agreement is None:
-            phrase.agreement = Agreement(self.end_p)
-        words, spoken = text.split(), phrase.agreement.spoken
-        if not words_of(words[resume(phrase.agreement.said, words):]):
-            self.trace(phrase, 'agree', result='dutch-unsettled', piece=None)
-            return
-        # The same Dutch after the same English gives the same draft.
-        if phrase.drafted and phrase.drafted[0] == (text, spoken):
-            draft, joined, ends = phrase.drafted[1]
-        else:
-            sent = time.monotonic()
-            draft, joined = self.translate(text, spoken, phrase.context)
-            ends = self.translate.ends(text)
-            phrase.drafted = ((text, spoken), (draft, joined, ends))
-            self.trace(phrase, 'draft', source=text, spoken=spoken, english=draft, ends=round(ends, 3),
-                       latency=round(time.monotonic() - sent, 3))
-        agreement = phrase.agreement
-        piece = agreement.offer(words, draft, ends, joined)
-        wait, voice_left, cover, refill = self.gate(phrase, piece)
-        if piece and wait:
-            agreement.hold(wait, piece)
-            piece = None
-        elif piece:
-            piece = agreement.commit()
-        self.trace(phrase, 'agree', voice_left=round(voice_left, 3), ends=round(ends, 3), **agreement.decision)
-        if piece:
-            self.queue(phrase, *piece, last=False, cover=round(cover, 3), refill=round(refill, 3))
-
     def call(self, action):
         child = subprocess.Popen([self.command, '_translate', action], env=dict(os.environ))
         child.wait()
@@ -708,33 +780,6 @@ class Interpreter:
                 self.frames.put_nowait(frame)
             except queue.Full as error:
                 raise RuntimeError('translation fell over 120 seconds behind capture') from error
-
-    def recognize(self):
-        while True:
-            pcm, phrase = self.phrases.get()
-            sent = time.monotonic()
-            # The last sentences steer whisper toward words that fit what was being said.
-            text, _, no_speech = transcribe_words(pcm, self.url, self.language, self.prompt(phrase), 16000, 1)
-            self.trace(phrase, 'final_asr', audio_s=round(len(pcm) / 32000, 3), text=text,
-                       latency=round(time.monotonic() - sent, 3), no_speech=round(no_speech, 4))
-            with phrase.lock:
-                phrase.closed = True
-                self.trace(phrase, 'closed')
-                if not re.search(r'\w', text) or HALLUCINATION.search(text):
-                    self.drop(phrase)
-                    continue
-                self.recent.append(text)
-                self.heard(phrase, text, live=False)
-                words, agreement = text.split(), phrase.agreement or Agreement(self.end_p)
-                if re.search(r'\w', ' '.join(words[resume(agreement.said, words):])):
-                    sent = time.monotonic()
-                    english, joined = self.translate(text, agreement.spoken, phrase.context)
-                    self.trace(phrase, 'final_draft', source=text, spoken=agreement.spoken, english=english,
-                               latency=round(time.monotonic() - sent, 3))
-                    if english:
-                        self.queue(phrase, english, joined, last=True)
-                self.finish(phrase)
-                self.translate.remember(text, phrase.english)
 
     def send(self, pcm, record):
         """Play audio and return when it starts; record collects what the microphone carried, silences too."""
@@ -861,10 +906,9 @@ class Interpreter:
             if time.monotonic() > deadline:
                 raise RuntimeError('translator identity was not published')
             time.sleep(.01)
-        # Ollama loads its model while PyTorch and the voice load; the first phrase is not slow.
+        # The engine loads while PyTorch and the voice load; the first phrase is not slow.
         with ThreadPoolExecutor(max_workers=1) as pool:
-            # Also checks that Ollama gives the token probabilities the sentence-end chance needs.
-            warming = pool.submit(lambda: (self.translate('Hallo.'), self.translate.ends('Hallo.')))
+            warming = pool.submit(self.engine.start)
             self.voice = Voice(self.voice_path)
             # Also the first measure of how long the voice takes to start and to say a sentence.
             began = time.monotonic()
@@ -882,10 +926,10 @@ class Interpreter:
             os.environ.get('TALKEY_FFMPEG', 'ffmpeg'), '-nostdin', '-hide_banner', '-loglevel', 'error',
             '-f', 'pulse', '-i', os.environ.get('TALKEY_SOURCE', 'default'),
             '-ac', '1', '-ar', '16000', '-f', 's16le', '-'], stdout=subprocess.PIPE)
-        for work in (self.read_audio, self.recognize, self.speak):
+        for work in (self.read_audio, self.speak):
             self.guard(work)
         self.call('ready')
-        audio = phrase = None
+        phrase = None
         recent, level = deque(maxlen=4), self.state_dir / 'translate.raw'
         while True:
             if self.error:
@@ -906,24 +950,24 @@ class Interpreter:
             speech = self.vad.speech(frame)
             self.trace.frame(speech)
             event = self.endpoint.update(speech)
-            if audio is None:
+            if phrase is None:
                 self.preroll.append(frame)
             else:
-                audio.append(frame)
+                phrase.frames.append(frame)
             if event == 'start':
-                audio = list(self.preroll)
-                self.preroll.clear()
                 self.count += 1
-                phrase, previewed = Phrase(time.monotonic(), self.count), len(audio)
-                phrase.context = self.translate.context()
+                phrase = Phrase(time.monotonic(), self.count)
+                phrase.frames = list(self.preroll)
+                self.preroll.clear()
                 if self.trace.file:
                     frames = self.trace.frames
                     phrase.onset = self.trace.clock(frames - self.endpoint.start_frames)
-                    phrase.audio_from = self.trace.clock(frames - len(audio))
+                    phrase.audio_from = self.trace.clock(frames - len(phrase.frames))
                     self.trace(phrase, 'speech_start', detected=phrase.started, audio_from=phrase.audio_from)
                 with self.lock:
                     self.subtitles.append(phrase.shown)
                     self.show()
+                self.engine.begin(phrase)
                 # The speaker takes phrases in the order they began, while their English streams in.
                 self.lines.put(phrase)
                 self.mark(hearing=True)
@@ -931,20 +975,18 @@ class Interpreter:
             elif event == 'end':
                 phrase.ended = time.monotonic()
                 self.trace(phrase, 'speech_end', at=self.trace.clock(self.trace.voiced), endpoint=phrase.ended)
-                phrase.audio = b''.join(audio)
-                self.phrases.put((phrase.audio, phrase))
-                audio = None
+                phrase.audio = b''.join(phrase.frames)
+                self.engine.end(phrase)
+                phrase = None
                 self.mark(1, hearing=False)
                 self.state('listening')
-            elif (audio is not None and len(audio) - previewed >= self.preview_frames
-                    and (self.previewing is None or self.previewing.done())):
-                previewed = len(audio)
-                self.previewing = self.previews.submit(self.preview_phrase, phrase, b''.join(audio),
-                                                       self.prompt(phrase))
+            elif phrase is not None:
+                self.engine.hear(phrase)
 
     def close(self):
         self.stopping.set()
-        self.previews.shutdown(wait=False, cancel_futures=True)
+        if self.engine:
+            self.engine.close()
         for name in ('translate.showing', 'translate.raw'):
             (self.state_dir / name).unlink(missing_ok=True)
         for process in [self.capture] + self.players:
@@ -987,8 +1029,8 @@ def main():
         if not setting('TRANSLATE_SPEED_MIN', '0.85', 0.5, 1.5) <= speed <= setting('TRANSLATE_SPEED_MAX', '1.15', 0.5, 1.5):
             raise ValueError('TALKEY_TRANSLATE_SPEED must be between TALKEY_TRANSLATE_SPEED_MIN and _MAX')
         setting('TRANSLATE_GUARD', '0.5', 0, 10)
-        setting('TRANSLATE_END_P', '0.2', 0.01, 1)
-        setting('TRANSLATE_WORD_P', '0.5', 0, 1)
+        engine = ENGINES['whisper']
+        engine.check()
         for name in ('STREAM', 'TICK', 'RECORD', 'TRACE'):
             if os.environ.get(f'TALKEY_TRANSLATE_{name}', '1') not in ('0', '1'):
                 raise ValueError(f'TALKEY_TRANSLATE_{name} must be 0 or 1')
@@ -1002,7 +1044,7 @@ def main():
             raise ValueError('Pocket TTS is not installed in this Python; run: talkey-setup translate')
         vad = Silero()
         if not args.check:
-            interpreter = Interpreter(vad, voice, Translator())
+            interpreter = Interpreter(vad, voice, engine)
             interpreter.run()
     except StopRequested:
         pass
