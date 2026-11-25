@@ -68,7 +68,7 @@
 ;; said, and the English on air highlighted. The wheel scrolls back through the
 ;; session; the feed names where each step goes (up/down), so the handler is dumb.
 (deflisten tr
-  :initial '{"headertext":"","status":"","statuskind":"plain","rows":"","footertext":"","zone":"silence","meterpath":"blank.svg","up":"stay","down":"live"}'
+  :initial '{"headertext":"","status":"","statuskind":"plain","rows":"","footertext":"","zone":"silence","meterpath":"blank.svg","up":"stay","down":"live","enginetext":""}'
   "$TALKEY_EWW_DIR/eww-feed translate")
 
 (defwidget talkeytranslate []
@@ -82,7 +82,10 @@
              :markup {tr.rows})
       (box :class "hud-well tr-well" :hexpand true :halign "fill"
         (image :class "hud-graph" :path {tr.meterpath} :image-width 796 :image-height 34))
-      (label :class "hud-footer" :halign "start" :text {tr.footertext}))))
+      (box :orientation "horizontal" :space-evenly false :hexpand true
+        (label :class "hud-footer" :halign "start" :text {tr.footertext})
+        (box :hexpand true)
+        (label :class "hud-footer tr-engine" :text {tr.enginetext})))))
 
 ;; wm-ignore: the window manager never manages it, so it can never take focus,
 ;; not even when you scroll it, and it needs no window manager rule.

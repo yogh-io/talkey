@@ -778,10 +778,25 @@ class TranslateRuntimeTests(unittest.TestCase):
     def test_devices_are_created_once_and_kept_after_stop(self):
         self.listen()
         self.run_key('translate', 'stop')
-        self.assertEqual(self.status(), {'enabled': False, 'state': 'off', 'microphone': 'talkey_translate_mic'})
+        self.assertEqual(self.status(), {'enabled': False, 'state': 'off', 'engine': 'whisper',
+                                         'microphone': 'talkey_translate_mic'})
         self.listen()
         self.assertEqual((self.root/'devices').read_text().split(),
                          ['sinks:talkey_translate', 'sources:talkey_translate_mic'])
+
+    def test_status_names_the_running_engine_and_otherwise_the_configured_one(self):
+        self.listen()
+        self.assertEqual((self.state/'translate.current/engine').read_text(), 'whisper\n')
+        self.env['TALKEY_TRANSLATE_ENGINE'] = 'other'
+        self.assertEqual(self.status()['engine'], 'whisper')
+        self.run_key('translate', 'stop')
+        self.assertEqual(self.status()['engine'], 'other')
+
+    def test_an_unknown_engine_refuses_to_start(self):
+        self.env['TALKEY_TRANSLATE_ENGINE'] = 'nope'
+        self.assertNotEqual(self.run_key('translate', 'start', check=False).returncode, 0)
+        self.assertFalse(self.status()['enabled'])
+        self.assertFalse((self.root/'devices').exists())
 
     def test_refuses_to_listen_to_its_own_output(self):
         (self.root/'default-source').write_text('talkey_translate_mic')

@@ -2,6 +2,7 @@
 # Other names let a second, private instance run beside yours, for example in tests.
 TRANSLATE_SINK="${TALKEY_TRANSLATE_SINK:-talkey_translate}"
 TRANSLATE_MIC="${TALKEY_TRANSLATE_MIC:-talkey_translate_mic}"
+TRANSLATE_ENGINE="${TALKEY_TRANSLATE_ENGINE:-whisper}"
 translate_load() { TRANSLATE_DIR="$(readlink -f "$STATE_DIR/translate.current" 2>/dev/null)"; [[ -d "$TRANSLATE_DIR" ]]; }
 translate_active() { translate_load && process_alive "$TRANSLATE_DIR/worker.pid"; }
 translate_state() { printf '%s\n' "$1" > "$TRANSLATE_DIR/state"; state_changed; }
@@ -32,7 +33,7 @@ translate_start() {
     notify 'translate: your input is the talkey English mic - choose your real microphone' 5000
     return 1
   fi
-  if ! "$python" "$SCRIPT_DIR/talkey-translate-worker" --check; then
+  if ! TALKEY_TRANSLATE_ENGINE="$TRANSLATE_ENGINE" "$python" "$SCRIPT_DIR/talkey-translate-worker" --check; then
     notify 'translate mode unavailable - run: talkey-setup translate' 5000
     return 1
   fi
@@ -44,10 +45,12 @@ translate_start() {
   TRANSLATE_DIR="$(mktemp -d "$STATE_DIR/translate.XXXXXXXX")"
   local link="$STATE_DIR/translate.current.new-$$"
   ln -s "$TRANSLATE_DIR" "$link"; mv -Tf "$link" "$STATE_DIR/translate.current"
+  printf '%s\n' "$TRANSLATE_ENGINE" > "$TRANSLATE_DIR/engine"
   translate_state starting
   TALKEY_STATE_DIR="$STATE_DIR" TALKEY_DATA_DIR="$DATA_DIR" TALKEY_TRANSLATE_RUN="$TRANSLATE_DIR" \
   TALKEY_FFMPEG="$FFMPEG" TALKEY_SOURCE="$AUDIO_SOURCE" TALKEY_WHISPER_URL="$WHISPER_URL" \
   TALKEY_TRANSLATE_SINK="$TRANSLATE_SINK" TALKEY_ARCHIVE_DIR="$ARCHIVE_DIR" \
+  TALKEY_TRANSLATE_ENGINE="$TRANSLATE_ENGINE" \
     "$python" "$SCRIPT_DIR/talkey-translate-worker" 9>&- < /dev/null >> "$STATE_DIR/log" 2>&1 &
   process_save "$!" "$TRANSLATE_DIR/worker.pid" || { translate_state error; return 1; }
   camera_follow_translate
@@ -70,14 +73,16 @@ translate_stop() {
 translate_command() {
   case "$ACTION" in
     status)
-      local enabled=false state=off
+      local enabled=false state=off engine="$TRANSLATE_ENGINE"
       if translate_load; then
         state="$(cat "$TRANSLATE_DIR/state" 2> /dev/null || echo off)"
         if process_alive "$TRANSLATE_DIR/worker.pid"; then enabled=true
         elif [[ "$state" != off ]]; then state=error; fi
+        # A run that is not off reports its own engine; otherwise the one that would start.
+        [[ "$state" == off || ! -s "$TRANSLATE_DIR/engine" ]] || engine="$(cat "$TRANSLATE_DIR/engine")"
       fi
       case "$state" in off|starting|listening|hearing|error) ;; *) state=error ;; esac
-      printf '{"enabled":%s,"state":"%s","microphone":"%s"}\n' "$enabled" "$state" "$TRANSLATE_MIC" ;;
+      printf '{"enabled":%s,"state":"%s","engine":"%s","microphone":"%s"}\n' "$enabled" "$state" "$engine" "$TRANSLATE_MIC" ;;
     stop) translate_stop ;;
     toggle) if translate_active; then translate_stop; else translate_start; fi ;;
     start) translate_start ;;

@@ -108,6 +108,8 @@ $sans: "Cantarell", "Noto Sans", "DejaVu Sans", sans-serif;
 .tr-status { font-family: $mono; font-size: 15px; color: $ink-dim; }
 .tr-onair  { color: $live; }
 .tr-back   { color: $work; }
+// Which engine translates, in the footer's free corner, as readable as the header's labels.
+.tr-engine { color: $ink-dim; }
 
 // --- key cheat sheet --------------------------------------------------------
 // Same panel language as the HUD, so the two read as one tool. Toggled by

@@ -1029,7 +1029,10 @@ def main():
         if not setting('TRANSLATE_SPEED_MIN', '0.85', 0.5, 1.5) <= speed <= setting('TRANSLATE_SPEED_MAX', '1.15', 0.5, 1.5):
             raise ValueError('TALKEY_TRANSLATE_SPEED must be between TALKEY_TRANSLATE_SPEED_MIN and _MAX')
         setting('TRANSLATE_GUARD', '0.5', 0, 10)
-        engine = ENGINES['whisper']
+        name = os.environ.get('TALKEY_TRANSLATE_ENGINE', 'whisper')
+        if name not in ENGINES:
+            raise ValueError('TALKEY_TRANSLATE_ENGINE must be one of: ' + ', '.join(ENGINES))
+        engine = ENGINES[name]
         engine.check()
         for name in ('STREAM', 'TICK', 'RECORD', 'TRACE'):
             if os.environ.get(f'TALKEY_TRANSLATE_{name}', '1') not in ('0', '1'):

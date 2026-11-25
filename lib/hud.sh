@@ -239,6 +239,7 @@ def markup: reduce .[] as $x ([];
     headertext: ($header + (if .lines[-1].live // false then " · HEARING" else "" end)),
     status: $state.status, statuskind: $state.kind, rows: $text,
     footertext: "\($state.hint // (if $up == "stay" then "" else "scroll up to look back  ·  " end))double-tap \($memo) to stop",
+    enginetext: (if $engine == "" then "" else "engine: " + $engine end),
     level: $level, zone: $zone, meterpath: $meter,
     up: $up,
     down: (if ($newer | length) <= 1 then "live" else ($newer[0] | tostring) end),
@@ -247,7 +248,7 @@ def markup: reduce .[] as $x ([];
 
 # emit_subtitles - one frame of the translate window; BUSY=1 while English is on air or due.
 emit_subtitles() {
-  local pkdb lvl zone stamp meterpath anchor now subs frame header
+  local pkdb lvl zone stamp meterpath anchor now subs frame header engine
   read -r pkdb lvl zone < <(peak "$LEVEL")
   # The worker refreshes translate.raw while a phrase shows; each refresh is one step of the trace.
   stamp="$(stat -Lc%Y.%y "$LEVEL" 2>/dev/null)"
@@ -261,9 +262,11 @@ emit_subtitles() {
   now="${EPOCHREALTIME%??????}"; now="${now%?}.${EPOCHREALTIME: -6}"
   subs="$(cat "$SUBS" 2>/dev/null)"; [[ -n "$subs" ]] || subs='{"lines":[]}'
   header="${TALKEY_TRANSLATE_FROM:-nl} → en"
+  engine="$(cat "$STATE_DIR/translate.current/engine" 2>/dev/null)"
   frame="$(jq -c --argjson now "$now" --argjson anchor "$anchor" --argjson rows "$SUB_ROWS" \
              --argjson cols "$SUB_COLS" --arg mono "$SUB_MONO" --arg header "${header^^}" \
              --arg memo "$L_MEMO" --argjson level "$lvl" --arg zone "$zone" --arg meter "$meterpath" \
+             --arg engine "$engine" \
              "$SUB_JQ" <<< "$subs")" || { BUSY=0; return; }
   BUSY=0; [[ "$frame" != *'"busy":true'* ]] || BUSY=1
   printf '%s\n' "$frame"
