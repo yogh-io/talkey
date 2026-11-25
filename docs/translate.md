@@ -416,6 +416,12 @@ Most call apps mirror your own preview, so the subtitles look backwards to you
 but read normally for everyone else. Most apps can switch the mirroring off in
 their video settings.
 
+Call apps crop your video to fit their tiles. Jitsi uses a portrait tile when
+there is little room and keeps only the middle of the picture. So the subtitles
+stay in the middle part, shaped 3:4, which a portrait tile still shows whole.
+`TALKEY_CAMERA_CAPTION_ASPECT` changes that shape: `16:9` uses the full width,
+`9:16` fits a phone screen.
+
 ## Give it context
 
 A 4B translation model only sees a few sentences. It does not know what you
@@ -497,6 +503,7 @@ after changing them.
 | `TALKEY_CAMERA_INPUT` | your first webcam | The webcam the talkey camera shows, like `/dev/video0` |
 | `TALKEY_CAMERA_SIZE` | `1280x720` | Size of the talkey camera; the webcam is scaled and cropped to fill it |
 | `TALKEY_CAMERA_FPS` | `30` | Frames per second of the talkey camera |
+| `TALKEY_CAMERA_CAPTION_ASPECT` | `3:4` | Shape of the middle part of the picture the subtitles stay in, as WIDTH:HEIGHT, so apps that crop your video still show them |
 
 For a status bar, `talkey translate status` prints one JSON object, for example
 `{"enabled":true,"state":"hearing","engine":"whisper","microphone":"talkey_translate_mic"}`.

@@ -67,6 +67,20 @@ class CaptionTests(unittest.TestCase):
         luma[top:top + y.shape[0], left:left + y.shape[1]] = 90
         self.assertTrue(np.array_equal(luma, old))
 
+    def test_subtitles_stay_in_the_middle_part_a_portrait_tile_shows(self):
+        width, height = 1280, 720
+        drawer = captions.Captions(width, height, 3 / 4)
+        drawer.draw(bytearray(width * height * 3 // 2), [('Hallo', 'nl')], [('Hello', 'said')])
+        top, left, y = drawer.layer[:3]
+        self.assertGreaterEqual(left, (width - 540) // 2)
+        self.assertLessEqual(left + y.shape[1], (width + 540) // 2)
+        self.assertLessEqual(abs(left + y.shape[1] / 2 - width / 2), 2)
+
+    def test_a_wide_shape_uses_the_whole_width_less_the_margins(self):
+        drawer = captions.Captions(1280, 720, 16 / 9)
+        drawer.draw(bytearray(1280 * 720 * 3 // 2), [('Hallo', 'nl')], [('Hello', 'said')])
+        self.assertEqual(drawer.layer[2].shape[1], 1280 - 2 * 90)
+
     def test_nothing_is_drawn_without_words(self):
         frame = bytearray([90]) * (320 * 180 * 3 // 2)
         captions.Captions(320, 180).draw(frame, [], [])
@@ -113,6 +127,14 @@ class CameraWorkerTests(unittest.TestCase):
             (state/'translate.showing').unlink()
             self.assertEqual(subtitles.now(100.0 + worker.LINGER_S - 0.1)[0], [('Ja.', 'nl')])
             self.assertEqual(subtitles.now(100.0 + worker.LINGER_S), ([], []))
+
+    def test_the_caption_shape_is_width_to_height(self):
+        self.assertEqual(worker.aspect('3:4'), 0.75)
+        self.assertAlmostEqual(worker.aspect('16:9'), 16 / 9)
+        self.assertEqual(worker.aspect('1:1.3'), 1 / 1.3)
+        for bad in ('3x4', '3:0', '1:5', '', 'wide'):
+            with self.assertRaises(ValueError):
+                worker.aspect(bad)
 
     def test_the_size_must_be_even(self):
         self.assertEqual(worker.size('1280x720'), (1280, 720))

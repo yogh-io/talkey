@@ -170,8 +170,16 @@ def size(value):
     return int(match[1]), int(match[2])
 
 
+def aspect(value):
+    match = re.fullmatch(r'(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)', value)
+    if not match or float(match[2]) == 0 or not 0.25 <= float(match[1]) / float(match[2]) <= 4:
+        raise ValueError('TALKEY_CAMERA_CAPTION_ASPECT must be WIDTH:HEIGHT between 1:4 and 4:1, like 3:4')
+    return float(match[1]) / float(match[2])
+
+
 def main():
     width, height = size(os.environ.get('TALKEY_CAMERA_SIZE', '1280x720'))
+    shape = aspect(os.environ.get('TALKEY_CAMERA_CAPTION_ASPECT', '3:4'))
     fps = int(os.environ.get('TALKEY_CAMERA_FPS', '30'))
     if not 1 <= fps <= 60:
         raise ValueError('TALKEY_CAMERA_FPS must be between 1 and 60')
@@ -179,7 +187,7 @@ def main():
     ffmpeg = os.environ.get('TALKEY_FFMPEG', 'ffmpeg')
     state_dir = Path(os.environ['TALKEY_STATE_DIR'])
     loopback = Loopback(os.environ['TALKEY_CAMERA_DEVICE'], width, height, fps)
-    captions = Captions(width, height)
+    captions = Captions(width, height, shape)
     subtitles = Subtitles(state_dir)
     blank = bytes(width * height) + bytes([128]) * (width * height // 2)
     camera, retry, ask = None, 0.0, None

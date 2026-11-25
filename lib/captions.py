@@ -94,13 +94,15 @@ def following(rows):
 class Captions:
     """Draws the subtitles into I420 frames of one size."""
 
-    def __init__(self, width, height):
+    def __init__(self, width, height, aspect=3 / 4):
         self.width, self.height = width, height
+        # Call apps crop the video to fit their tiles: the subtitles stay in the middle part of this shape.
+        self.room = min(width, round(height * aspect))
         s = height / 720
         self.dutch = font('sans-serif', round(25 * s))
         self.heard = font('sans-serif:italic', round(25 * s))
         self.english = font('sans-serif:medium', round(36 * s))
-        self.margin, self.pad, self.gap = round(90 * s), round(22 * s), round(10 * s)
+        self.margin, self.pad, self.gap = round(self.room * 0.07), round(22 * s), round(10 * s)
         self.dutch_h, self.english_h, self.bottom = round(34 * s), round(48 * s), round(34 * s)
         self.key = None
         self.layer = None
@@ -125,13 +127,13 @@ class Captions:
 
     def render(self, dutch, english):
         """The subtitle box as planes to blend: premultiplied Y, U, V and what is kept of the frame."""
-        width = self.width - 2 * self.margin - 2 * self.pad
+        width = self.room - 2 * self.margin - 2 * self.pad
         face = self.heard if any(look == 'heard' for _, look in dutch) else self.dutch
         nl = wrap(dutch, face, width)[-ROWS:]
         en = following(wrap(english, self.english, width))
         box_h = 2 * self.pad + len(nl) * self.dutch_h + (self.gap if nl and en else 0) + len(en) * self.english_h
         box_h += box_h % 2
-        box_w = (self.width - 2 * self.margin) // 2 * 2
+        box_w = (self.room - 2 * self.margin) // 2 * 2
         layer = Image.new('RGBA', (box_w, box_h), (0, 0, 0, 0))
         d = ImageDraw.Draw(layer)
         d.rounded_rectangle((0, 0, box_w - 1, box_h - 1), round(14 * self.height / 720), fill=(8, 12, 16, 165))
