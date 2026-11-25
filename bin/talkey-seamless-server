@@ -112,7 +112,7 @@ class Model:
                        OfflineWav2VecBertEncoderAgent.from_args(args, **models),
                        Decoder.from_args(args, **models), Decoder.from_args(own, **models))
         self.load_s = time.monotonic() - started
-        # One phrase of the longest length reserves the memory a phrase can need, and warms the kernels.
+        # A phrase of TALKEY_TRANSLATE_MAX_S reserves nearly all the memory a phrase needs, and warms the kernels.
         began = time.monotonic()
         self.begin()
         noise = numpy.random.default_rng(0).normal(0, 0.003, int(warm_s * 16000))

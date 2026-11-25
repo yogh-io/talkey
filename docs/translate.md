@@ -152,10 +152,11 @@ downloads anything while translating.
 
 ### GPU memory
 
-Seamless takes about 5 GB of VRAM, all of it when translation starts, so a card
-that is too small fails right then, not in the middle of a call. On an 8 GB card
-it does not fit next to the whisper server that dictation uses (about 2 GB), nor
-next to a loaded Ollama model. Without room, translation stops with
+Seamless takes about 5 GB of VRAM, nearly all of it when translation starts, so
+a card that is too small fails right then rather than in the middle of a call. A
+long phrase can still need a little more than it took at the start. On an 8 GB
+card it does not fit next to the whisper server that dictation uses (about 2
+GB), nor next to a loaded Ollama model. Without room, translation stops with
 `translate stopped: not enough GPU memory for Seamless`, how much was free, and
 which programs hold the rest.
 

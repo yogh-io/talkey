@@ -232,9 +232,10 @@ empty cache directory, so a missing file is an error and never a download, and
 it never builds the Silero agent, which would call `torch.hub`. It moves its
 real stdout aside, so a library that prints cannot break the protocol. After
 loading it runs one phrase of `TALKEY_TRANSLATE_MAX_S` seconds of quiet noise,
-which reserves the memory a long phrase needs and warms the kernels; too little
-GPU memory fails then, with the free memory and the other GPU users in the
-reason. It exits as soon as its stdin ends, even while it loads, so a killed
+which reserves nearly all the memory a long phrase needs and warms the kernels;
+too little GPU memory fails then, with the free memory and the other GPU users
+in the reason. A real phrase can need a little more: it can be up to the
+preroll longer, and speech gives the decoders more tokens than noise. It exits as soon as its stdin ends, even while it loads, so a killed
 worker frees the GPU. A stop while the engine loads closes it before the worker
 waits for `start`, so the server has gone before the worker exits.
 
