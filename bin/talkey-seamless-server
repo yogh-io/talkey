@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""SeamlessStreaming speech to text for translate mode, in the Python of its own environment.
+
+The translate worker starts it and talks JSON lines. In: start, audio and end of each phrase.
+Out: ready once the model is loaded and warmed up; then, each time it has heard about a third of a
+second more, the new whole English words, followed by the words in the speaker's own language.
+It runs offline: the weights are read from TALKEY_SEAMLESS_HOME/models, never downloaded.
+"""
+import argparse
+import base64
+import copy
+import importlib.util
+import json
+import logging
+import os
+from pathlib import Path
+import queue
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+
+for data in (Path(os.environ.get('TALKEY_DATA_DIR', '/nonexistent')),
+             Path(__file__).resolve().parent.parent, Path('/usr/share/talkey')):
+    if (data / 'lib/seamless.py').is_file():
+        # Last, so talkey's own modules never shadow one of the Seamless stack.
+        sys.path.append(str(data / 'lib'))
+        break
+from seamless import CODES, STEP_MS, WEIGHTS, Words, home
+
+STEP_BYTES = 16000 * 2 * STEP_MS // 1000
+
+
+def card(models):
+    """fairseq2 asset cards that point every file of the two models at local paths."""
+    uri = {name: json.dumps('file://' + str(models / name)) for name in WEIGHTS}
+    return (f'name: seamless_streaming_unity@user\n'
+            f'checkpoint: {uri["seamless_streaming_unity.pt"]}\n'
+            f'char_tokenizer: {uri["spm_char_lang38_tc.model"]}\n'
+            f'tokenizer: {uri["tokenizer.model"]}\n'
+            f'\n---\n\n'
+            f'name: seamless_streaming_monotonic_decoder@user\n'
+            f'checkpoint: {uri["seamless_streaming_monotonic_decoder.pt"]}\n')
+
+
+def gpu_users():
+    """What other programs hold of the GPU, as nvidia-smi says when it is there."""
+    if not shutil.which('nvidia-smi'):
+        return []
+    listing = subprocess.run(['nvidia-smi', '--query-compute-apps=pid,process_name,used_memory',
+                              '--format=csv,noheader,nounits'], capture_output=True, text=True).stdout
+    users = [re.fullmatch(r'\s*(\d+),\s*(.*),\s*(\d+)\s*', line) for line in listing.splitlines()]
+    return [f'{Path(user[2]).name} {user[3]} MiB' for user in users if user and user[1] != str(os.getpid())]
+
+
+class Model:
+    """The SeamlessStreaming agents, stepped by hand: features, the speech encoder, and two text
+    decoders on the same encoder output, one for English and one for the speaker's language."""
+    # Free and total GPU memory before loading, in bytes, for the error that says it is too little.
+    memory = None
+
+    def __init__(self, language, run_dir, warm_s, started):
+        cards, cache = run_dir / 'seamless/cards', run_dir / 'seamless/cache'
+        cards.mkdir(parents=True, exist_ok=True)
+        cache.mkdir(parents=True, exist_ok=True)
+        (cards / 'talkey.yaml').write_text(card(home() / 'models'))
+        # Read when fairseq2 is imported. With an empty cache a missing file is an error, never a download.
+        os.environ.update(FAIRSEQ2_USER_ASSET_DIR=str(cards), FAIRSEQ2_CACHE_DIR=str(cache))
+        # Before the Seamless modules set their own, chattier logging.
+        logging.basicConfig(level=logging.WARNING)
+        import numpy
+        import torch
+        from simuleval.data.segments import EmptySegment, SpeechSegment
+        from seamless_communication.streaming.agents.online_feature_extractor import OnlineFeatureExtractorAgent
+        from seamless_communication.streaming.agents.offline_w2v_bert_encoder import OfflineWav2VecBertEncoderAgent
+        from seamless_communication.streaming.agents.online_text_decoder import MMASpeechToTextDecoderAgent
+        from seamless_communication.streaming.agents.unity_pipeline import UnitYPipelineMixin
+        self.numpy, self.torch, self.empty, self.speech = numpy, torch, EmptySegment, SpeechSegment
+        self.language = language
+        Model.memory = torch.cuda.mem_get_info()
+
+        class Decoder(MMASpeechToTextDecoderAgent):
+            """Also remembers whether the model's latest next token was the end of the text."""
+            ended = False
+
+            def run_decoder(self, states, pred_indices):
+                index, prob, out = super().run_decoder(states, pred_indices)
+                self.ended = index == self.eos_idx
+                return index, prob, out
+
+        class Options:
+            @classmethod
+            def add_args(cls, parser):
+                pass
+
+        class Pipeline(UnitYPipelineMixin, Options):
+            pass
+
+        parser = argparse.ArgumentParser()
+        for agent in (OnlineFeatureExtractorAgent, OfflineWav2VecBertEncoderAgent, Decoder, Pipeline):
+            agent.add_args(parser)
+        parser.add_argument('--device')
+        parser.add_argument('--fp16', action='store_true')
+        args = parser.parse_args(['--task=s2tt', '--device=cuda:0', '--dtype=fp16', '--no-early-stop',
+                                  '--tgt-lang=eng', '--decision-threshold=0.5'])
+        models = Pipeline.load_model(args)
+        own = copy.copy(args)
+        own.tgt_lang = language
+        self.agents = (OnlineFeatureExtractorAgent.from_args(args, **models),
+                       OfflineWav2VecBertEncoderAgent.from_args(args, **models),
+                       Decoder.from_args(args, **models), Decoder.from_args(own, **models))
+        self.load_s = time.monotonic() - started
+        # One phrase of the longest length reserves the memory a phrase can need, and warms the kernels.
+        began = time.monotonic()
+        self.begin()
+        noise = numpy.random.default_rng(0).normal(0, 0.003, int(warm_s * 16000))
+        self.english((noise * 32768).astype(numpy.int16).tobytes(), False)
+        self.source(False)
+        self.step_s = time.monotonic() - began
+        self.english(b'', True)
+        self.source(True)
+
+    def ready(self):
+        return {'load_s': round(self.load_s, 2), 'gpu_mb': self.torch.cuda.memory_reserved() >> 20,
+                'step_s': round(self.step_s, 3)}
+
+    def begin(self):
+        self.states = [agent.build_states() for agent in self.agents]
+        self.words = (Words(), Words())
+        self.encoded = None
+
+    def english(self, pcm, finished):
+        """The new whole English words for more audio of the phrase, and whether the model's next
+        token is the end of the text."""
+        feature, encoder, decoder, _ = self.agents
+        samples = (self.numpy.frombuffer(pcm, self.numpy.int16) / 32768).astype(self.numpy.float32)
+        segment = self.speech(content=samples.tolist(), sample_rate=16000, finished=finished, tgt_lang='eng')
+        features = feature.pushpop(segment, self.states[0])
+        if finished and not features.finished:
+            # Too little audio was left to make features; the phrase still ends.
+            features = self.empty(finished=True)
+        self.encoded = None
+        if features.is_empty and not finished:
+            return [], False
+        self.encoded = encoder.pushpop(features, self.states[1])
+        return self.decode(decoder, self.states[2], self.encoded, self.words[0], finished)
+
+    def source(self, finished):
+        """The new whole words in the speaker's language, read from the same encoder output."""
+        if self.encoded is None:
+            return []
+        encoded = copy.copy(self.encoded)
+        encoded.tgt_lang = self.language
+        return self.decode(self.agents[3], self.states[3], encoded, self.words[1], finished)[0]
+
+    @staticmethod
+    def decode(decoder, states, encoded, words, finished):
+        decoder.ended = False
+        out = decoder.pushpop(encoded, states)
+        tokens = [token for token in (out.content or '').split(' ') if token] if not out.is_empty else []
+        return words.feed(tokens, finished or decoder.ended), decoder.ended and not finished
+
+
+def reason(error):
+    """One line for the notification; it never holds what was heard or written."""
+    if 'out of memory' in str(error).lower():
+        import torch
+        free, total = (value >> 20 for value in Model.memory or torch.cuda.mem_get_info())
+        users = gpu_users()
+        return f'not enough GPU memory for Seamless: {free} of {total} MiB free' + ('; in use: ' + ', '.join(users) if users else '')
+    lines = str(error).strip().splitlines()
+    return f'{type(error).__name__}: {lines[0]}' if lines else type(error).__name__
+
+
+def serve(load, lines, emit):
+    """Load the model, then step it on the phrases read from lines; return the exit status."""
+    inbox = queue.Queue()
+
+    def read():
+        for line in lines:
+            inbox.put(line)
+        inbox.put(None)
+
+    threading.Thread(target=read, daemon=True).start()
+    try:
+        model = load()
+        emit({'event': 'ready', **model.ready()})
+        n, pending, heard = None, bytearray(), 0
+
+        def step(finished):
+            nonlocal pending, heard
+            began, heard = time.monotonic(), heard + len(pending) / 32000
+            words, end = model.english(bytes(pending), finished)
+            pending = bytearray()
+            emit({'event': 'done' if finished else 'step', 'n': n, 'heard_s': round(heard, 3),
+                  'compute_s': round(time.monotonic() - began, 3), 'words': words, 'end': end})
+            words = model.source(finished)
+            if words or finished:
+                emit({'event': 'source', 'n': n, 'words': words, 'final': finished})
+
+        while True:
+            # Everything that has arrived, then one step with all of the audio that waits.
+            while True:
+                try:
+                    line = inbox.get(block=len(pending) < STEP_BYTES)
+                except queue.Empty:
+                    break
+                if line is None:
+                    return 0
+                message = json.loads(line)
+                if message['op'] == 'start':
+                    n, pending, heard = message['n'], bytearray(), 0
+                    model.begin()
+                elif message['op'] == 'audio':
+                    pending += base64.b64decode(message['pcm'])
+                elif message['op'] == 'end':
+                    step(True)
+                    n = None
+            step(False)
+    except Exception as error:
+        emit({'event': 'error', 'message': reason(error)})
+        return 1
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--check', action='store_true', help='only check that the Seamless packages are installed')
+    if parser.parse_args().check:
+        missing = [name for name in ('torch', 'fairseq2', 'seamless_communication') if importlib.util.find_spec(name) is None]
+        if missing:
+            print(f'{", ".join(missing)} not installed in {sys.executable}', file=sys.stderr)
+            return 1
+        return 0
+    started = time.monotonic()
+    # The protocol owns stdout; anything a library prints goes to the log instead.
+    protocol = os.fdopen(os.dup(1), 'w', encoding='utf-8', buffering=1)
+    os.dup2(2, 1)
+
+    def emit(event):
+        protocol.write(json.dumps(event) + '\n')
+        protocol.flush()
+
+    language = CODES[os.environ.get('TALKEY_TRANSLATE_FROM', 'nl')]
+    run_dir = Path(os.environ['TALKEY_TRANSLATE_RUN'])
+    warm_s = float(os.environ.get('TALKEY_TRANSLATE_MAX_S', '15'))
+    return serve(lambda: Model(language, run_dir, warm_s, started), sys.stdin, emit)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
